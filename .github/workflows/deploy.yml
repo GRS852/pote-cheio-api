@@ -34,5 +34,6 @@ jobs:
           username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_API}}
           script: |
+            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u GRS852 --password-stdin
             docker pull ghcr.io/grs852/pote-cheio-api:latest
             docker compose -f /app/pote-cheio/api/docker-compose.yml up -d --force-recreate

@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  api:
+    image: ghcr.io/grs852/pote-cheio-api:latest
+    container_name: pote-cheio-api
+    restart: always
+    ports:
+      - "3000:3000"
+    env_file:
+      - /app/.env.production

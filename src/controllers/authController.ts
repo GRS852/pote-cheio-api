@@ -59,6 +59,6 @@ export async function login(req: Request, res: Response) {
     return res.status(200).json({ token })
   } catch (error) {
     console.error('Erro no login:', error)
-    return res.status(500).json({ error: 'Erro interno do servidor' })
+    return res.status(500).json({ error: 'Erro interno do servidor', detail: String(error) })
   }
 }

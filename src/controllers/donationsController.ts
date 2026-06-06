@@ -241,3 +241,117 @@ export async function myWishlist(req: AuthRequest, res: Response) {
     return res.status(500).json({ error: 'Internal server error' })
   }
 }
+
+export async function deleteDonation(req: AuthRequest, res: Response) {
+  const { id } = req.params
+
+  try {
+    const donation = await pool.query(
+      `SELECT id, user_id FROM donations WHERE id = $1`,
+      [id]
+    )
+
+    if (donation.rows.length === 0) {
+      return res.status(404).json({ error: 'Donation not found' })
+    }
+
+    if (donation.rows[0].user_id !== req.userId) {
+      return res.status(403).json({ message: 'Você não tem permissão para excluir esta doação' })
+    }
+
+    await pool.query(`DELETE FROM donations WHERE id = $1`, [id])
+
+    return res.status(200).json({ message: 'Doação excluída com sucesso' })
+  } catch (error) {
+    console.error('Delete donation error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+}
+
+export async function getInterestedUsers(req: AuthRequest, res: Response) {
+  const { id: donation_id } = req.params
+
+  try {
+    const donation = await pool.query(
+      `SELECT id, user_id FROM donations WHERE id = $1`,
+      [donation_id]
+    )
+
+    if (donation.rows.length === 0) {
+      return res.status(404).json({ error: 'Donation not found' })
+    }
+
+    if (donation.rows[0].user_id !== req.userId) {
+      return res.status(403).json({ error: 'Permission denied' })
+    }
+
+    const { rows } = await pool.query(
+      `SELECT w.user_id, p.full_name, c.id AS conversation_id
+       FROM wishlist w
+       JOIN profiles p ON p.user_id = w.user_id
+       LEFT JOIN conversations c ON c.donation_id = w.donation_id AND c.sender_id = w.user_id
+       WHERE w.donation_id = $1
+       ORDER BY w.created_at ASC`,
+      [donation_id]
+    )
+
+    return res.status(200).json({ interested: rows })
+  } catch (error) {
+    console.error('Get interested users error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+}
+
+export async function confirmDonation(req: AuthRequest, res: Response) {
+  const { id: donation_id } = req.params
+  const { user_id: recipient_id } = req.body
+
+  try {
+    const donation = await pool.query(
+      `SELECT id, user_id, title FROM donations WHERE id = $1`,
+      [donation_id]
+    )
+
+    if (donation.rows.length === 0) {
+      return res.status(404).json({ error: 'Donation not found' })
+    }
+
+    if (donation.rows[0].user_id !== req.userId) {
+      return res.status(403).json({ error: 'Permission denied' })
+    }
+
+    const inWishlist = await pool.query(
+      `SELECT id FROM wishlist WHERE donation_id = $1 AND user_id = $2`,
+      [donation_id, recipient_id]
+    )
+
+    if (inWishlist.rows.length === 0) {
+      return res.status(400).json({ message: 'Este usuário não demonstrou interesse nesta doação' })
+    }
+
+    const { rows } = await pool.query(
+      `UPDATE donations SET status = 'completed' WHERE id = $1 RETURNING *`,
+      [donation_id]
+    )
+
+    await pool.query(
+      `INSERT INTO donation_history (donation_id, donor_id, recipient_id)
+       VALUES ($1, $2, $3)`,
+      [donation_id, req.userId, recipient_id]
+    )
+
+    await createNotification({
+      user_id: recipient_id,
+      type: 'donation',
+      title: 'Doação confirmada!',
+      message: `Sua solicitação de "${donation.rows[0].title}" foi aceita pelo doador.`,
+      reference_id: Number(donation_id),
+      reference_type: 'donation',
+    })
+
+    return res.status(200).json({ donation: rows[0] })
+  } catch (error) {
+    console.error('Confirm donation error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+}

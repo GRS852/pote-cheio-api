@@ -9,3 +9,9 @@ services:
       - "3000:3000"
     env_file:
       - /app/.env.production
+    networks:
+      - postgresql-xbkl_default
+
+networks:
+  postgresql-xbkl_default:
+    external: true

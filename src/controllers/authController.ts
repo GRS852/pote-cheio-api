@@ -151,7 +151,11 @@ export async function forgotPassword(req: Request, res: Response) {
       [code, expiresAt, email]
     )
 
-    await sendPasswordResetEmail(email, code)
+    try {
+      await sendPasswordResetEmail(email, code)
+    } catch (emailError) {
+      console.error('Email send failed:', emailError)
+    }
 
     return res.status(200).json(genericResponse)
   } catch (error) {

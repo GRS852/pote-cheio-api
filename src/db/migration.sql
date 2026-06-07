@@ -72,6 +72,16 @@ CREATE TABLE public.notifications (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS reset_code TEXT;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS reset_code_expires_at TIMESTAMPTZ;
+
+CREATE TABLE IF NOT EXISTS public.conversation_hidden (
+    user_id INTEGER NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    conversation_id INTEGER NOT NULL REFERENCES public.conversations(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, conversation_id)
+);
+
 CREATE INDEX idx_users_email ON public.users USING btree (email);
 CREATE INDEX idx_profiles_user ON public.profiles USING btree (user_id);
 CREATE INDEX idx_donations_user ON public.donations USING btree (user_id);

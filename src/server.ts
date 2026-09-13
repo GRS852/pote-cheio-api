@@ -8,6 +8,8 @@ import donationsRoutes from './routes/donationsRoutes'
 import feedRoutes from './routes/feedRoutes'
 import notificationsRoutes from './routes/notificationsRoutes'
 import historyRoutes from './routes/historyRoutes'
+import reportsRoutes from './routes/reportsRoutes'
+import adminRoutes from './routes/adminRoutes'
 import { initSocket } from './socket'
 
 dotenv.config()
@@ -29,6 +31,8 @@ app.use('/feed', feedRoutes)
 app.use('/conversations', conversationsRoutes)
 app.use('/notifications', notificationsRoutes)
 app.use('/history', historyRoutes)
+app.use('/reports', reportsRoutes)
+app.use('/admin', adminRoutes)
 
 initSocket(httpServer)
 

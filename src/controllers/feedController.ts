@@ -4,14 +4,16 @@ import { AuthRequest } from '../middlewares/authMiddleware'
 
 export async function feed(req: AuthRequest, res: Response) {
   const { category, search, page = '1', limit = '20' } = req.query
-  const userId = req.userId
+  const userId = req.userId ?? null
 
   const pageNum = Math.max(1, parseInt(page as string))
   const limitNum = Math.min(50, Math.max(1, parseInt(limit as string)))
   const offset = (pageNum - 1) * limitNum
 
   const params: unknown[] = [userId]
-  const filters: string[] = [`d.status = 'available'`, `d.user_id != $1`]
+  // $1 vem null para visitantes anônimos; sem o "IS NULL", a comparação
+  // "!=" contra null nunca é verdadeira e o feed inteiro sumiria para eles.
+  const filters: string[] = [`d.status = 'available'`, `($1::int IS NULL OR d.user_id != $1)`]
 
   if (category) {
     params.push(category)

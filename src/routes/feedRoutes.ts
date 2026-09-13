@@ -1,9 +1,9 @@
 import { Router } from 'express'
 import { feed } from '../controllers/feedController'
-import { authMiddleware } from '../middlewares/authMiddleware'
+import { optionalAuthMiddleware } from '../middlewares/optionalAuthMiddleware'
 
 const router = Router()
 
-router.get('/', authMiddleware, feed)
+router.get('/', optionalAuthMiddleware, feed)
 
 export default router

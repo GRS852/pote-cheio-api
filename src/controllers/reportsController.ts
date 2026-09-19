@@ -73,13 +73,16 @@ export async function listReports(req: AdminAuthRequest, res: Response) {
       `SELECT r.*,
               pr.full_name AS reporter_name,
               pu.full_name AS reported_user_name,
-              d.title AS donation_title
+              d.title AS donation_title,
+              d.photo_url AS donation_photo_url,
+              pa.full_name AS assigned_admin_name
        FROM reports r
        JOIN users ru ON ru.id = r.reporter_id
        LEFT JOIN profiles pr ON pr.user_id = ru.id
        LEFT JOIN users uu ON uu.id = r.reported_user_id
        LEFT JOIN profiles pu ON pu.user_id = uu.id
        LEFT JOIN donations d ON d.id = r.donation_id
+       LEFT JOIN admins pa ON pa.id = r.assigned_admin_id
        ${where}
        ORDER BY r.created_at DESC`,
       params
@@ -99,18 +102,29 @@ export async function getReport(req: AdminAuthRequest, res: Response) {
     const { rows } = await pool.query(
       `SELECT r.*,
               pr.full_name AS reporter_name, ru.email AS reporter_email,
-              pu.full_name AS reported_user_name, uu.email AS reported_user_email
+              pu.full_name AS reported_user_name, uu.email AS reported_user_email,
+              uu.status AS reported_user_status, uu.banned_until,
+              pa.full_name AS assigned_admin_name
        FROM reports r
        JOIN users ru ON ru.id = r.reporter_id
        LEFT JOIN profiles pr ON pr.user_id = ru.id
        LEFT JOIN users uu ON uu.id = r.reported_user_id
        LEFT JOIN profiles pu ON pu.user_id = uu.id
+       LEFT JOIN admins pa ON pa.id = r.assigned_admin_id
        WHERE r.id = $1`,
       [id]
     )
 
     if (rows.length === 0) return res.status(404).json({ error: 'Report not found' })
     const report = rows[0]
+
+    if (report.reported_user_id) {
+      const warnings = await pool.query(
+        `SELECT COUNT(*)::int AS count FROM moderation_actions WHERE user_id = $1 AND action_type = 'warning'`,
+        [report.reported_user_id]
+      )
+      report.reported_user_warning_count = warnings.rows[0].count
+    }
 
     if (report.donation_id) {
       const donation = await pool.query('SELECT * FROM donations WHERE id = $1', [report.donation_id])
@@ -141,19 +155,29 @@ export async function updateReportStatus(req: AdminAuthRequest, res: Response) {
   }
 
   try {
+    const current = await pool.query('SELECT assigned_admin_id FROM reports WHERE id = $1', [id])
+    if (current.rows.length === 0) return res.status(404).json({ error: 'Report not found' })
+
+    const currentAssignee = current.rows[0].assigned_admin_id
+    if (currentAssignee && currentAssignee !== req.adminId) {
+      return res.status(409).json({ error: 'Report is locked by another administrator' })
+    }
+
+    // "pending" libera o job; qualquer outro status assume o job pra este admin
+    // (trava real: enquanto assigned_admin_id != null e != req.adminId, ninguém mais mexe).
     const resolved = status === 'resolved' || status === 'dismissed'
+    const nextAssignee = status === 'pending' ? null : req.adminId
 
     const { rows } = await pool.query(
       `UPDATE reports
        SET status = $1,
-           resolved_at = CASE WHEN $2 THEN CURRENT_TIMESTAMP ELSE NULL END,
-           resolved_by = CASE WHEN $2 THEN $3 ELSE NULL END
-       WHERE id = $4
+           assigned_admin_id = $2,
+           resolved_at = CASE WHEN $3 THEN CURRENT_TIMESTAMP ELSE NULL END,
+           resolved_by = CASE WHEN $3 THEN $4 ELSE NULL END
+       WHERE id = $5
        RETURNING *`,
-      [status, resolved, req.adminId, id]
+      [status, nextAssignee, resolved, req.adminId, id]
     )
-
-    if (rows.length === 0) return res.status(404).json({ error: 'Report not found' })
 
     return res.status(200).json({ report: rows[0] })
   } catch (error) {

@@ -10,7 +10,9 @@ import notificationsRoutes from './routes/notificationsRoutes'
 import historyRoutes from './routes/historyRoutes'
 import reportsRoutes from './routes/reportsRoutes'
 import adminRoutes from './routes/adminRoutes'
+import usersRoutes from './routes/usersRoutes'
 import { purgeExpiredAccounts } from './controllers/adminController'
+import { autoFinalizeStaleTransactions } from './controllers/donationTransactionController'
 import { initSocket } from './socket'
 
 dotenv.config()
@@ -34,6 +36,7 @@ app.use('/notifications', notificationsRoutes)
 app.use('/history', historyRoutes)
 app.use('/reports', reportsRoutes)
 app.use('/admin', adminRoutes)
+app.use('/users', usersRoutes)
 
 initSocket(httpServer)
 
@@ -43,6 +46,12 @@ initSocket(httpServer)
 const ONE_DAY_MS = 24 * 60 * 60 * 1000
 purgeExpiredAccounts()
 setInterval(purgeExpiredAccounts, ONE_DAY_MS)
+
+// Roda uma vez ao subir e depois a cada hora: finaliza sozinha qualquer
+// transação enviada há mais de 7 dias sem confirmação de nenhuma das partes.
+const ONE_HOUR_MS = 60 * 60 * 1000
+autoFinalizeStaleTransactions()
+setInterval(autoFinalizeStaleTransactions, ONE_HOUR_MS)
 
 httpServer.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)

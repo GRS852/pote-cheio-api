@@ -352,14 +352,17 @@ export async function confirmDonation(req: AuthRequest, res: Response) {
       return res.status(400).json({ message: 'Este usuário não demonstrou interesse nesta doação' })
     }
 
+    // A doação só é marcada como 'completed' quando a transação for
+    // finalizada (beneficiário confirma o recebimento, doador confirma em
+    // nome dele, ou a auto-finalização entra em ação). Aceitar só reserva.
     const { rows } = await pool.query(
-      `UPDATE donations SET status = 'completed' WHERE id = $1 RETURNING *`,
+      `UPDATE donations SET status = 'reserved' WHERE id = $1 RETURNING *`,
       [donation_id]
     )
 
-    await pool.query(
-      `INSERT INTO donation_history (donation_id, donor_id, recipient_id)
-       VALUES ($1, $2, $3)`,
+    const transaction = await pool.query(
+      `INSERT INTO donation_history (donation_id, donor_id, recipient_id, status)
+       VALUES ($1, $2, $3, 'accepted_awaiting_shipment') RETURNING id`,
       [donation_id, req.userId, recipient_id]
     )
 
@@ -367,12 +370,12 @@ export async function confirmDonation(req: AuthRequest, res: Response) {
       user_id: recipient_id,
       type: 'donation',
       title: 'Doação confirmada!',
-      message: `Sua solicitação de "${donation.rows[0].title}" foi aceita pelo doador.`,
+      message: `Sua solicitação de "${donation.rows[0].title}" foi aceita pelo doador. Acompanhe o envio na tela da doação.`,
       reference_id: Number(donation_id),
       reference_type: 'donation',
     })
 
-    return res.status(200).json({ donation: rows[0] })
+    return res.status(200).json({ donation: rows[0], transaction_id: transaction.rows[0].id })
   } catch (error) {
     console.error('Confirm donation error:', error)
     return res.status(500).json({ error: 'Internal server error' })

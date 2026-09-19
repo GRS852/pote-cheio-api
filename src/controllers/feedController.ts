@@ -34,6 +34,7 @@ export async function feed(req: AuthRequest, res: Response) {
     const { rows } = await pool.query(
       `SELECT
          d.*,
+         d.user_id AS donor_id,
          p.full_name AS donor_name,
          EXISTS (
            SELECT 1 FROM wishlist w

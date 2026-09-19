@@ -10,6 +10,7 @@ import notificationsRoutes from './routes/notificationsRoutes'
 import historyRoutes from './routes/historyRoutes'
 import reportsRoutes from './routes/reportsRoutes'
 import adminRoutes from './routes/adminRoutes'
+import { purgeExpiredAccounts } from './controllers/adminController'
 import { initSocket } from './socket'
 
 dotenv.config()
@@ -35,6 +36,13 @@ app.use('/reports', reportsRoutes)
 app.use('/admin', adminRoutes)
 
 initSocket(httpServer)
+
+// Roda uma vez ao subir e depois a cada 24h: remove de vez contas desativadas
+// há mais de 30 dias (a exclusão em si já é imediata a nível de acesso —
+// isso só limpa o registro depois do prazo de carência).
+const ONE_DAY_MS = 24 * 60 * 60 * 1000
+purgeExpiredAccounts()
+setInterval(purgeExpiredAccounts, ONE_DAY_MS)
 
 httpServer.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)

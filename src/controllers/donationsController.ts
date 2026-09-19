@@ -3,17 +3,33 @@ import pool from '../db'
 import { AuthRequest } from '../middlewares/authMiddleware'
 import { createNotification } from '../services/notificationsService'
 
+const MAX_DONATION_PHOTOS = 5
+
 export async function createDonation(req: AuthRequest, res: Response) {
-  const { title, description, category, photo_url, quantity } = req.body
+  const { title, description, category, quantity } = req.body
+  const photo_urls: string[] = Array.isArray(req.body.photo_urls)
+    ? req.body.photo_urls.filter((url: unknown) => typeof url === 'string' && url.length > 0).slice(0, MAX_DONATION_PHOTOS)
+    : []
 
   try {
     const { rows } = await pool.query(
       `INSERT INTO donations (user_id, title, description, category, photo_url, quantity)
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [req.userId, title, description, category, photo_url, quantity ?? 1]
+      [req.userId, title, description, category, photo_urls[0] ?? null, quantity ?? 1]
     )
 
-    return res.status(201).json({ donation: rows[0] })
+    const donation = rows[0]
+
+    for (let position = 0; position < photo_urls.length; position++) {
+      await pool.query(
+        `INSERT INTO donation_photos (donation_id, photo_url, position) VALUES ($1, $2, $3)`,
+        [donation.id, photo_urls[position], position]
+      )
+    }
+
+    donation.photos = photo_urls
+
+    return res.status(201).json({ donation })
   } catch (error) {
     console.error('Create donation error:', error)
     return res.status(500).json({ error: 'Internal server error' })
@@ -77,7 +93,14 @@ export async function getDonation(req: AuthRequest, res: Response) {
       return res.status(404).json({ error: 'Donation not found' })
     }
 
-    return res.status(200).json({ donation: rows[0] })
+    const donation = rows[0]
+    const photos = await pool.query(
+      `SELECT photo_url FROM donation_photos WHERE donation_id = $1 ORDER BY position ASC`,
+      [id]
+    )
+    donation.photos = photos.rows.map(row => row.photo_url)
+
+    return res.status(200).json({ donation })
   } catch (error) {
     console.error('Get donation error:', error)
     return res.status(500).json({ error: 'Internal server error' })

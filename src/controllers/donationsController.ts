@@ -66,7 +66,11 @@ export async function listDonations(req: AuthRequest, res: Response) {
 export async function myDonations(req: AuthRequest, res: Response) {
   try {
     const { rows } = await pool.query(
-      `SELECT * FROM donations WHERE user_id = $1 ORDER BY created_at DESC`,
+      `SELECT d.*, rp.full_name AS reserved_for_name
+       FROM donations d
+       LEFT JOIN profiles rp ON rp.user_id = d.reserved_for_user_id
+       WHERE d.user_id = $1
+       ORDER BY d.created_at DESC`,
       [req.userId]
     )
 
@@ -309,9 +313,10 @@ export async function getInterestedUsers(req: AuthRequest, res: Response) {
     }
 
     const { rows } = await pool.query(
-      `SELECT w.user_id, p.full_name, c.id AS conversation_id
+      `SELECT w.user_id, p.full_name, u.avatar_url, c.id AS conversation_id
        FROM wishlist w
        JOIN profiles p ON p.user_id = w.user_id
+       JOIN users u ON u.id = w.user_id
        LEFT JOIN conversations c ON c.donation_id = w.donation_id AND c.sender_id = w.user_id
        WHERE w.donation_id = $1
        ORDER BY w.created_at ASC`,
@@ -379,5 +384,98 @@ export async function confirmDonation(req: AuthRequest, res: Response) {
   } catch (error) {
     console.error('Confirm donation error:', error)
     return res.status(500).json({ error: 'Internal server error' })
+  }
+}
+
+const RESERVE_DAYS = 3
+
+export async function reserveDonation(req: AuthRequest, res: Response) {
+  const { id: donation_id } = req.params
+  const { user_id } = req.body
+
+  try {
+    const donation = await pool.query(
+      `SELECT id, user_id, status, title FROM donations WHERE id = $1`,
+      [donation_id]
+    )
+
+    if (donation.rows.length === 0) return res.status(404).json({ error: 'Donation not found' })
+    if (donation.rows[0].user_id !== req.userId) return res.status(403).json({ error: 'Permission denied' })
+    if (donation.rows[0].status !== 'available') {
+      return res.status(400).json({ error: 'Donation is not available' })
+    }
+
+    const inWishlist = await pool.query(
+      `SELECT id FROM wishlist WHERE donation_id = $1 AND user_id = $2`,
+      [donation_id, user_id]
+    )
+    if (inWishlist.rows.length === 0) {
+      return res.status(400).json({ message: 'Este usuário não demonstrou interesse nesta doação' })
+    }
+
+    const { rows } = await pool.query(
+      `UPDATE donations
+       SET status = 'reserved', reserved_for_user_id = $1, reserved_until = CURRENT_TIMESTAMP + interval '${RESERVE_DAYS} days'
+       WHERE id = $2 RETURNING *`,
+      [user_id, donation_id]
+    )
+
+    await createNotification({
+      user_id,
+      type: 'donation',
+      title: 'Doação reservada para você!',
+      message: `O doador reservou "${donation.rows[0].title}" para você por ${RESERVE_DAYS} dias.`,
+      reference_id: Number(donation_id),
+      reference_type: 'donation',
+    })
+
+    return res.status(200).json({ donation: rows[0] })
+  } catch (error) {
+    console.error('Reserve donation error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+}
+
+export async function unreserveDonation(req: AuthRequest, res: Response) {
+  const { id: donation_id } = req.params
+
+  try {
+    const donation = await pool.query(
+      `SELECT id, user_id, reserved_for_user_id FROM donations WHERE id = $1`,
+      [donation_id]
+    )
+
+    if (donation.rows.length === 0) return res.status(404).json({ error: 'Donation not found' })
+    if (donation.rows[0].user_id !== req.userId) return res.status(403).json({ error: 'Permission denied' })
+    if (!donation.rows[0].reserved_for_user_id) {
+      return res.status(400).json({ error: 'Donation is not softly reserved' })
+    }
+
+    const { rows } = await pool.query(
+      `UPDATE donations SET status = 'available', reserved_for_user_id = NULL, reserved_until = NULL
+       WHERE id = $1 RETURNING *`,
+      [donation_id]
+    )
+
+    return res.status(200).json({ donation: rows[0] })
+  } catch (error) {
+    console.error('Unreserve donation error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+}
+
+// Roda periodicamente (ver server.ts): libera sozinha qualquer reserva
+// "leve" (feita por reserveDonation, sem transação de envio) vencida há
+// mais de RESERVE_DAYS dias sem o doador ter confirmado nem desreservado.
+export async function releaseExpiredReservations(): Promise<void> {
+  try {
+    const result = await pool.query(
+      `UPDATE donations
+       SET status = 'available', reserved_for_user_id = NULL, reserved_until = NULL
+       WHERE status = 'reserved' AND reserved_for_user_id IS NOT NULL AND reserved_until < CURRENT_TIMESTAMP`
+    )
+    if (result.rowCount) console.log(`[releaseExpiredReservations] Liberou ${result.rowCount} reserva(s) vencida(s)`)
+  } catch (error) {
+    console.error('Release expired reservations error:', error)
   }
 }

@@ -11,9 +11,10 @@ export async function feed(req: AuthRequest, res: Response) {
   const offset = (pageNum - 1) * limitNum
 
   const params: unknown[] = [userId]
-  // $1 vem null para visitantes anônimos; sem o "IS NULL", a comparação
-  // "!=" contra null nunca é verdadeira e o feed inteiro sumiria para eles.
-  const filters: string[] = [`d.status = 'available'`, `($1::int IS NULL OR d.user_id != $1)`]
+  // O próprio usuário continua vendo suas doações no feed (com a tag "Sua
+  // publicação" no app) — só não pode favoritar/pedir a própria doação,
+  // o que já é bloqueado em addToWishlist.
+  const filters: string[] = [`d.status = 'available'`]
 
   if (category) {
     params.push(category)

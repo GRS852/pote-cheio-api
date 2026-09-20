@@ -13,6 +13,7 @@ import adminRoutes from './routes/adminRoutes'
 import usersRoutes from './routes/usersRoutes'
 import { purgeExpiredAccounts } from './controllers/adminController'
 import { autoFinalizeStaleTransactions } from './controllers/donationTransactionController'
+import { releaseExpiredReservations } from './controllers/donationsController'
 import { initSocket } from './socket'
 
 dotenv.config()
@@ -52,6 +53,11 @@ setInterval(purgeExpiredAccounts, ONE_DAY_MS)
 const ONE_HOUR_MS = 60 * 60 * 1000
 autoFinalizeStaleTransactions()
 setInterval(autoFinalizeStaleTransactions, ONE_HOUR_MS)
+
+// Mesma cadência: libera sozinha qualquer reserva "leve" (feita ao clicar
+// em Reservar) vencida há mais de 3 dias sem o doador confirmar ou desreservar.
+releaseExpiredReservations()
+setInterval(releaseExpiredReservations, ONE_HOUR_MS)
 
 httpServer.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)

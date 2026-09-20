@@ -12,6 +12,8 @@ import {
   deleteDonation,
   getInterestedUsers,
   confirmDonation,
+  reserveDonation,
+  unreserveDonation,
 } from '../controllers/donationsController'
 import {
   getTransaction,
@@ -35,6 +37,8 @@ router.get('/:id', optionalAuthMiddleware, getDonation)
 router.delete('/:id', authMiddleware, deleteDonation)
 router.patch('/:id/status', authMiddleware, updateStatus)
 router.patch('/:id/confirm', authMiddleware, confirmDonation)
+router.patch('/:id/reserve', authMiddleware, reserveDonation)
+router.patch('/:id/unreserve', authMiddleware, unreserveDonation)
 router.post('/:id/complete', authMiddleware, completeDonation)
 router.get('/:id/interested', authMiddleware, getInterestedUsers)
 router.post('/:id/wishlist', authMiddleware, addToWishlist)

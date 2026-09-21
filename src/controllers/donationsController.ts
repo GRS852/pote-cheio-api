@@ -86,9 +86,10 @@ export async function getDonation(req: AuthRequest, res: Response) {
 
   try {
     const { rows } = await pool.query(
-      `SELECT d.*, d.user_id AS donor_id, p.full_name AS donor_name
+      `SELECT d.*, d.user_id AS donor_id, p.full_name AS donor_name, u.created_at AS donor_created_at
        FROM donations d
        JOIN profiles p ON p.user_id = d.user_id
+       JOIN users u ON u.id = d.user_id
        WHERE d.id = $1`,
       [id]
     )

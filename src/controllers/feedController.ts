@@ -10,26 +10,32 @@ export async function feed(req: AuthRequest, res: Response) {
   const limitNum = Math.min(50, Math.max(1, parseInt(limit as string)))
   const offset = (pageNum - 1) * limitNum
 
-  const params: unknown[] = [userId]
+  // filterParams alimenta só a cláusula WHERE (compartilhada pelas duas
+  // queries abaixo). userId/limit/offset são parâmetros à parte, usados
+  // só na query principal — misturar os dois arrays foi o que quebrou o
+  // feed quando o filtro de auto-exclusão (que usava $1) saiu do WHERE.
+  const filterParams: unknown[] = []
   // O próprio usuário continua vendo suas doações no feed (com a tag "Sua
   // publicação" no app) — só não pode favoritar/pedir a própria doação,
   // o que já é bloqueado em addToWishlist.
   const filters: string[] = [`d.status = 'available'`]
 
   if (category) {
-    params.push(category)
-    filters.push(`d.category = $${params.length}`)
+    filterParams.push(category)
+    filters.push(`d.category = $${filterParams.length}`)
   }
 
   if (search) {
-    params.push(`%${search}%`)
-    filters.push(`(d.title ILIKE $${params.length} OR d.description ILIKE $${params.length})`)
+    filterParams.push(`%${search}%`)
+    filters.push(`(d.title ILIKE $${filterParams.length} OR d.description ILIKE $${filterParams.length})`)
   }
 
   const where = filters.join(' AND ')
 
-  params.push(limitNum)
-  params.push(offset)
+  const userIdParam = filterParams.length + 1
+  const limitParam = filterParams.length + 2
+  const offsetParam = filterParams.length + 3
+  const mainParams = [...filterParams, userId, limitNum, offset]
 
   try {
     const { rows } = await pool.query(
@@ -39,19 +45,19 @@ export async function feed(req: AuthRequest, res: Response) {
          p.full_name AS donor_name,
          EXISTS (
            SELECT 1 FROM wishlist w
-           WHERE w.donation_id = d.id AND w.user_id = $1
+           WHERE w.donation_id = d.id AND w.user_id = $${userIdParam}
          ) AS in_wishlist
        FROM donations d
        JOIN profiles p ON p.user_id = d.user_id
        WHERE ${where}
        ORDER BY d.created_at DESC
-       LIMIT $${params.length - 1} OFFSET $${params.length}`,
-      params
+       LIMIT $${limitParam} OFFSET $${offsetParam}`,
+      mainParams
     )
 
     const total = await pool.query(
       `SELECT COUNT(*) FROM donations d WHERE ${where}`,
-      params.slice(0, params.length - 2)
+      filterParams
     )
 
     return res.status(200).json({

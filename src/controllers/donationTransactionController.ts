@@ -119,8 +119,11 @@ export async function donorConfirmReceived(req: AuthRequest, res: Response) {
     const transaction = await findTransaction(id)
     if (!transaction) return res.status(404).json({ error: 'Transaction not found' })
     if (transaction.donor_id !== req.userId) return res.status(403).json({ error: 'Permission denied' })
-    if (transaction.status !== 'shipped') {
-      return res.status(400).json({ error: 'Transaction has not been shipped yet' })
+    // Doações costumam ser feitas presencialmente: o doador pode finalizar
+    // direto (sem passar pela etapa opcional de "enviado") a qualquer momento
+    // antes de já estar finalizada.
+    if (transaction.status !== 'accepted_awaiting_shipment' && transaction.status !== 'shipped') {
+      return res.status(400).json({ error: 'Transaction is already finalized' })
     }
 
     const { rows } = await pool.query(

@@ -7,10 +7,10 @@ const VALID_REASONS = ['scam', 'inappropriate_content', 'harassment', 'spam']
 const VALID_STATUSES = ['pending', 'reviewing', 'resolved', 'dismissed']
 
 export async function createReport(req: AuthRequest, res: Response) {
-  const { target_type, donation_id, conversation_id, reason, description } = req.body
+  const { target_type, donation_id, conversation_id, comment_id, reason, description } = req.body
   const reporter_id = req.userId
 
-  if (target_type !== 'donation' && target_type !== 'conversation') {
+  if (target_type !== 'donation' && target_type !== 'conversation' && target_type !== 'comment') {
     return res.status(400).json({ error: 'Invalid target_type' })
   }
   if (!VALID_REASONS.includes(reason)) {
@@ -25,7 +25,7 @@ export async function createReport(req: AuthRequest, res: Response) {
       const donation = await pool.query('SELECT user_id FROM donations WHERE id = $1', [donation_id])
       if (donation.rows.length === 0) return res.status(404).json({ error: 'Donation not found' })
       reported_user_id = donation.rows[0].user_id
-    } else {
+    } else if (target_type === 'conversation') {
       if (!conversation_id) return res.status(400).json({ error: 'conversation_id is required' })
       const conversation = await pool.query(
         `SELECT sender_id, recipient_id FROM conversations
@@ -35,16 +35,23 @@ export async function createReport(req: AuthRequest, res: Response) {
       if (conversation.rows.length === 0) return res.status(404).json({ error: 'Conversation not found' })
       const { sender_id, recipient_id } = conversation.rows[0]
       reported_user_id = sender_id === reporter_id ? recipient_id : sender_id
+    } else {
+      if (!comment_id) return res.status(400).json({ error: 'comment_id is required' })
+      const comment = await pool.query('SELECT recipient_id FROM donation_comments WHERE id = $1', [comment_id])
+      if (comment.rows.length === 0) return res.status(404).json({ error: 'Comment not found' })
+      // Quem escreveu o comentário é o recipient_id (beneficiário que avaliou o doador).
+      reported_user_id = comment.rows[0].recipient_id
     }
 
     const { rows } = await pool.query(
-      `INSERT INTO reports (reporter_id, target_type, donation_id, conversation_id, reported_user_id, reason, description)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      `INSERT INTO reports (reporter_id, target_type, donation_id, conversation_id, comment_id, reported_user_id, reason, description)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
       [
         reporter_id,
         target_type,
         target_type === 'donation' ? donation_id : null,
         target_type === 'conversation' ? conversation_id : null,
+        target_type === 'comment' ? comment_id : null,
         reported_user_id,
         reason,
         description ?? null,
@@ -73,8 +80,9 @@ export async function listReports(req: AdminAuthRequest, res: Response) {
       `SELECT r.*,
               pr.full_name AS reporter_name,
               pu.full_name AS reported_user_name,
-              d.title AS donation_title,
+              COALESCE(d.title, cd.title) AS donation_title,
               d.photo_url AS donation_photo_url,
+              cm.comment AS comment_text,
               pa.full_name AS assigned_admin_name
        FROM reports r
        JOIN users ru ON ru.id = r.reporter_id
@@ -82,6 +90,8 @@ export async function listReports(req: AdminAuthRequest, res: Response) {
        LEFT JOIN users uu ON uu.id = r.reported_user_id
        LEFT JOIN profiles pu ON pu.user_id = uu.id
        LEFT JOIN donations d ON d.id = r.donation_id
+       LEFT JOIN donation_comments cm ON cm.id = r.comment_id
+       LEFT JOIN donations cd ON cd.id = cm.donation_id
        LEFT JOIN admins pa ON pa.id = r.assigned_admin_id
        ${where}
        ORDER BY r.created_at DESC`,
@@ -137,6 +147,17 @@ export async function getReport(req: AdminAuthRequest, res: Response) {
         [report.conversation_id]
       )
       report.messages = messages.rows
+    }
+
+    if (report.comment_id) {
+      const comment = await pool.query(
+        `SELECT c.*, d.title AS donation_title
+         FROM donation_comments c
+         JOIN donations d ON d.id = c.donation_id
+         WHERE c.id = $1`,
+        [report.comment_id]
+      )
+      report.comment = comment.rows[0] ?? null
     }
 
     return res.status(200).json({ report })

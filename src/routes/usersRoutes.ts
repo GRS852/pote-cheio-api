@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { getUserRatingSummary, getUserFeedback } from '../controllers/donationFeedbackController'
+import { getUserDonationStats } from '../controllers/donationsController'
 
 const router = Router()
 
@@ -7,5 +8,6 @@ const router = Router()
 // e os comentários deixados por quem já recebeu doações dele.
 router.get('/:id/rating-summary', getUserRatingSummary)
 router.get('/:id/feedback', getUserFeedback)
+router.get('/:id/donation-stats', getUserDonationStats)
 
 export default router

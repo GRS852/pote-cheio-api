@@ -66,7 +66,8 @@ export async function listDonations(req: AuthRequest, res: Response) {
 export async function myDonations(req: AuthRequest, res: Response) {
   try {
     const { rows } = await pool.query(
-      `SELECT d.*, rp.full_name AS reserved_for_name
+      `SELECT d.*, rp.full_name AS reserved_for_name,
+              (SELECT COUNT(*)::int FROM wishlist w WHERE w.donation_id = d.id) AS interested_count
        FROM donations d
        LEFT JOIN profiles rp ON rp.user_id = d.reserved_for_user_id
        WHERE d.user_id = $1
@@ -86,7 +87,8 @@ export async function getDonation(req: AuthRequest, res: Response) {
 
   try {
     const { rows } = await pool.query(
-      `SELECT d.*, d.user_id AS donor_id, p.full_name AS donor_name, u.created_at AS donor_created_at
+      `SELECT d.*, d.user_id AS donor_id, p.full_name AS donor_name,
+              u.created_at AS donor_created_at, u.avatar_url AS donor_avatar_url
        FROM donations d
        JOIN profiles p ON p.user_id = d.user_id
        JOIN users u ON u.id = d.user_id
@@ -221,8 +223,8 @@ export async function addToWishlist(req: AuthRequest, res: Response) {
       await createNotification({
         user_id: donation.rows[0].user_id,
         type: 'interest',
-        title: 'Someone wants your donation!',
-        message: `A user showed interest in "${donation.rows[0].title}".`,
+        title: 'Alguém se interessou pela sua doação!',
+        message: `Um usuário demonstrou interesse em "${donation.rows[0].title}".`,
         reference_id: conversation_id,
         reference_type: 'conversation',
       })
@@ -478,5 +480,34 @@ export async function releaseExpiredReservations(): Promise<void> {
     if (result.rowCount) console.log(`[releaseExpiredReservations] Liberou ${result.rowCount} reserva(s) vencida(s)`)
   } catch (error) {
     console.error('Release expired reservations error:', error)
+  }
+}
+
+// Público (sem login): mesmos números que o próprio usuário vê no seu
+// perfil (Itens doados / Recebidos / Reservados), pra aparecer também no
+// perfil público de qualquer doador.
+export async function getUserDonationStats(req: AuthRequest, res: Response) {
+  const { id } = req.params
+
+  try {
+    const [donated, reserved, received] = await Promise.all([
+      pool.query(`SELECT COUNT(*)::int AS count FROM donations WHERE user_id = $1 AND status = 'completed'`, [id]),
+      pool.query(`SELECT COUNT(*)::int AS count FROM donations WHERE user_id = $1 AND status = 'reserved'`, [id]),
+      pool.query(
+        `SELECT COUNT(*)::int AS count FROM wishlist w
+         JOIN donations d ON d.id = w.donation_id
+         WHERE w.user_id = $1 AND d.status = 'completed'`,
+        [id]
+      ),
+    ])
+
+    return res.status(200).json({
+      donated_count: donated.rows[0].count,
+      reserved_count: reserved.rows[0].count,
+      received_count: received.rows[0].count,
+    })
+  } catch (error) {
+    console.error('Get user donation stats error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
   }
 }

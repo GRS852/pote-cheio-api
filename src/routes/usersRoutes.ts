@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { getUserRatingSummary, getUserFeedback } from '../controllers/donationFeedbackController'
 import { getUserDonationStats } from '../controllers/donationsController'
+import { getPublicUserProfile } from '../controllers/usersController'
 
 const router = Router()
 
@@ -9,5 +10,6 @@ const router = Router()
 router.get('/:id/rating-summary', getUserRatingSummary)
 router.get('/:id/feedback', getUserFeedback)
 router.get('/:id/donation-stats', getUserDonationStats)
+router.get('/:id', getPublicUserProfile)
 
 export default router

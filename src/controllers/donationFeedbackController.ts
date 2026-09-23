@@ -113,10 +113,11 @@ export async function getUserFeedback(req: AuthRequest, res: Response) {
 
   try {
     const { rows } = await pool.query(
-      `SELECT c.*, d.title AS donation_title, p.full_name AS recipient_name
+      `SELECT c.*, d.title AS donation_title, p.full_name AS recipient_name, u.avatar_url AS recipient_avatar_url
        FROM donation_comments c
        JOIN donations d ON d.id = c.donation_id
        JOIN profiles p ON p.user_id = c.recipient_id
+       JOIN users u ON u.id = c.recipient_id
        WHERE c.donor_id = $1
        ORDER BY c.created_at DESC`,
       [id]

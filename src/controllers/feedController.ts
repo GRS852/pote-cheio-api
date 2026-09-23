@@ -43,12 +43,14 @@ export async function feed(req: AuthRequest, res: Response) {
          d.*,
          d.user_id AS donor_id,
          p.full_name AS donor_name,
+         u.avatar_url AS donor_avatar_url,
          EXISTS (
            SELECT 1 FROM wishlist w
            WHERE w.donation_id = d.id AND w.user_id = $${userIdParam}
          ) AS in_wishlist
        FROM donations d
        JOIN profiles p ON p.user_id = d.user_id
+       JOIN users u ON u.id = d.user_id
        WHERE ${where}
        ORDER BY d.created_at DESC
        LIMIT $${limitParam} OFFSET $${offsetParam}`,

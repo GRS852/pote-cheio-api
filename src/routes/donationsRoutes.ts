@@ -20,6 +20,7 @@ import {
   shipTransaction,
   receiveTransaction,
   donorConfirmReceived,
+  cancelTransaction,
 } from '../controllers/donationTransactionController'
 import { createRating, createComment } from '../controllers/donationFeedbackController'
 import { authMiddleware } from '../middlewares/authMiddleware'
@@ -49,6 +50,7 @@ router.get('/:id/transaction', authMiddleware, getTransaction)
 router.patch('/:id/transaction/ship', authMiddleware, shipTransaction)
 router.patch('/:id/transaction/receive', authMiddleware, receiveTransaction)
 router.patch('/:id/transaction/donor-confirm-received', authMiddleware, donorConfirmReceived)
+router.patch('/:id/transaction/cancel', authMiddleware, cancelTransaction)
 
 // Avaliação e comentário só liberados depois da doação finalizada (checado no controller)
 router.post('/:id/rating', authMiddleware, createRating)

@@ -7,7 +7,7 @@ const AUTO_FINALIZE_DAYS = 7
 
 async function findTransaction(donationId: string | string[]) {
   const { rows } = await pool.query(
-    `SELECT h.*, d.title, d.photo_url AS donation_photo_url,
+    `SELECT h.*, d.title, d.photo_url AS donation_photo_url, d.cancel_reason,
             pd.full_name AS donor_name, pr.full_name AS recipient_name,
             EXISTS(SELECT 1 FROM donation_ratings r WHERE r.donation_history_id = h.id) AS has_rating,
             EXISTS(SELECT 1 FROM donation_comments c WHERE c.donation_history_id = h.id) AS has_comment
@@ -148,6 +148,67 @@ export async function donorConfirmReceived(req: AuthRequest, res: Response) {
     return res.status(200).json({ transaction: rows[0] })
   } catch (error) {
     console.error('Donor confirm received error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+}
+
+// Cancelamento voluntário pelo doador: só faz sentido enquanto a doação
+// ainda está reservada (reserva simples ou transação aceita/enviada, mas
+// não finalizada). Libera a doação de volta pra 'available' pra poder ser
+// oferecida a outra pessoa.
+export async function cancelTransaction(req: AuthRequest, res: Response) {
+  const { id } = req.params
+  const { reason } = req.body
+
+  if (!reason || !String(reason).trim()) {
+    return res.status(400).json({ error: 'reason is required' })
+  }
+
+  try {
+    const donationResult = await pool.query(
+      `SELECT id, user_id, status, title, reserved_for_user_id FROM donations WHERE id = $1`,
+      [id]
+    )
+    if (donationResult.rows.length === 0) return res.status(404).json({ error: 'Donation not found' })
+
+    const donation = donationResult.rows[0]
+    if (donation.user_id !== req.userId) return res.status(403).json({ error: 'Permission denied' })
+    if (donation.status !== 'reserved') {
+      return res.status(400).json({ error: 'Only a reserved donation can be cancelled' })
+    }
+
+    const transaction = await findTransaction(id)
+    const recipientId = transaction?.recipient_id ?? donation.reserved_for_user_id
+
+    await pool.query(
+      `UPDATE donations
+       SET status = 'cancelled', cancel_reason = $1, cancelled_at = CURRENT_TIMESTAMP,
+           reserved_for_user_id = NULL, reserved_until = NULL
+       WHERE id = $2`,
+      [reason.trim(), id]
+    )
+
+    if (transaction && !['finalized_manual', 'finalized_automatic', 'cancelled'].includes(transaction.status)) {
+      await pool.query(
+        `UPDATE donation_history SET status = 'cancelled', cancelled_at = CURRENT_TIMESTAMP, cancelled_by = 'donor' WHERE id = $1`,
+        [transaction.id]
+      )
+    }
+
+    if (recipientId) {
+      await createNotification({
+        user_id: recipientId,
+        type: 'donation',
+        title: 'Doação cancelada',
+        message: `O doador cancelou "${donation.title}". Motivo: ${reason.trim()}`,
+        reference_id: Number(id),
+        reference_type: 'donation',
+      })
+    }
+
+    return res.status(200).json({ message: 'Donation cancelled' })
+  } catch (error) {
+    console.error('Cancel transaction error:', error)
     return res.status(500).json({ error: 'Internal server error' })
   }
 }

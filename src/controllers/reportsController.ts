@@ -114,13 +114,17 @@ export async function getReport(req: AdminAuthRequest, res: Response) {
               pr.full_name AS reporter_name, ru.email AS reporter_email,
               pu.full_name AS reported_user_name, uu.email AS reported_user_email,
               uu.status AS reported_user_status, uu.banned_until,
-              pa.full_name AS assigned_admin_name
+              pa.full_name AS assigned_admin_name,
+              ra.full_name AS resolved_by_name,
+              (SELECT ma.action_type FROM moderation_actions ma WHERE ma.report_id = r.id ORDER BY ma.created_at DESC LIMIT 1) AS resolution_action_type,
+              (SELECT ma.ban_days FROM moderation_actions ma WHERE ma.report_id = r.id ORDER BY ma.created_at DESC LIMIT 1) AS resolution_ban_days
        FROM reports r
        JOIN users ru ON ru.id = r.reporter_id
        LEFT JOIN profiles pr ON pr.user_id = ru.id
        LEFT JOIN users uu ON uu.id = r.reported_user_id
        LEFT JOIN profiles pu ON pu.user_id = uu.id
        LEFT JOIN admins pa ON pa.id = r.assigned_admin_id
+       LEFT JOIN admins ra ON ra.id = r.resolved_by
        WHERE r.id = $1`,
       [id]
     )
@@ -169,7 +173,7 @@ export async function getReport(req: AdminAuthRequest, res: Response) {
 
 export async function updateReportStatus(req: AdminAuthRequest, res: Response) {
   const { id } = req.params
-  const { status } = req.body
+  const { status, comment } = req.body
 
   if (!VALID_STATUSES.includes(status)) {
     return res.status(400).json({ error: 'Invalid status' })
@@ -194,15 +198,51 @@ export async function updateReportStatus(req: AdminAuthRequest, res: Response) {
        SET status = $1,
            assigned_admin_id = $2,
            resolved_at = CASE WHEN $3 THEN CURRENT_TIMESTAMP ELSE NULL END,
-           resolved_by = CASE WHEN $3 THEN $4 ELSE NULL END
+           resolved_by = CASE WHEN $3 THEN $4 ELSE NULL END,
+           resolution_comment = CASE WHEN $3 THEN $6 ELSE resolution_comment END
        WHERE id = $5
        RETURNING *`,
-      [status, nextAssignee, resolved, req.adminId, id]
+      [status, nextAssignee, resolved, req.adminId, id, comment ?? null]
     )
 
     return res.status(200).json({ report: rows[0] })
   } catch (error) {
     console.error('Update report error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+}
+
+export async function transferReport(req: AdminAuthRequest, res: Response) {
+  const { id } = req.params
+  const { to_admin_id, reason } = req.body
+
+  if (!to_admin_id || !reason || !String(reason).trim()) {
+    return res.status(400).json({ error: 'to_admin_id and reason are required' })
+  }
+
+  try {
+    const current = await pool.query('SELECT assigned_admin_id FROM reports WHERE id = $1', [id])
+    if (current.rows.length === 0) return res.status(404).json({ error: 'Report not found' })
+    if (current.rows[0].assigned_admin_id !== req.adminId) {
+      return res.status(409).json({ error: 'Only the administrator currently assigned can transfer this report' })
+    }
+
+    const targetAdmin = await pool.query('SELECT id FROM admins WHERE id = $1', [to_admin_id])
+    if (targetAdmin.rows.length === 0) return res.status(404).json({ error: 'Target administrator not found' })
+
+    const { rows } = await pool.query(
+      `UPDATE reports SET assigned_admin_id = $1, status = 'reviewing' WHERE id = $2 RETURNING *`,
+      [to_admin_id, id]
+    )
+
+    await pool.query(
+      `INSERT INTO report_transfers (report_id, from_admin_id, to_admin_id, reason) VALUES ($1, $2, $3, $4)`,
+      [id, req.adminId, to_admin_id, reason.trim()]
+    )
+
+    return res.status(200).json({ report: rows[0] })
+  } catch (error) {
+    console.error('Transfer report error:', error)
     return res.status(500).json({ error: 'Internal server error' })
   }
 }

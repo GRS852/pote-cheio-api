@@ -1,6 +1,7 @@
 import { Response } from 'express'
 import pool from '../db'
 import { AdminAuthRequest } from '../middlewares/adminAuthMiddleware'
+import { createNotification } from '../services/notificationsService'
 
 export async function getUserActivity(req: AdminAuthRequest, res: Response) {
   const { id } = req.params
@@ -85,6 +86,67 @@ async function checkReportLock(reportId: number, adminId: number): Promise<strin
   return null
 }
 
+// Uma advertência ou exclusão de conta vinculada a uma denúncia É a análise
+// dela: fecha o job sozinho, registrando quem decidiu e com qual motivo, em
+// vez de deixar o admin ter que voltar e clicar em "Marcar resolvida" à parte.
+async function resolveReportWithAction(reportId: number, adminId: number, comment: string | null): Promise<void> {
+  await pool.query(
+    `UPDATE reports
+     SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP, resolved_by = $1,
+         resolution_comment = $2, assigned_admin_id = $1
+     WHERE id = $3`,
+    [adminId, comment, reportId]
+  )
+}
+
+// Cancela qualquer doação/transação ativa desse doador (reserva simples ou
+// transação aceita/enviada, ainda não finalizada) quando a conta dele é
+// desativada ou suspensa — mesma mecânica de cancelTransaction, mas
+// disparada pelo sistema em vez de pelo próprio doador.
+async function cancelActiveTransactionsForUser(donorId: number, reason: string): Promise<void> {
+  const { rows: donations } = await pool.query(
+    `SELECT id, reserved_for_user_id FROM donations WHERE user_id = $1 AND status = 'reserved'`,
+    [donorId]
+  )
+
+  for (const donation of donations) {
+    const { rows: historyRows } = await pool.query(
+      `SELECT id, recipient_id, status FROM donation_history
+       WHERE donation_id = $1 AND status IN ('accepted_awaiting_shipment', 'shipped')
+       ORDER BY id DESC LIMIT 1`,
+      [donation.id]
+    )
+    const history = historyRows[0]
+    const recipientId = history?.recipient_id ?? donation.reserved_for_user_id
+
+    await pool.query(
+      `UPDATE donations
+       SET status = 'cancelled', cancel_reason = $1, cancelled_at = CURRENT_TIMESTAMP,
+           reserved_for_user_id = NULL, reserved_until = NULL
+       WHERE id = $2`,
+      [reason, donation.id]
+    )
+
+    if (history) {
+      await pool.query(
+        `UPDATE donation_history SET status = 'cancelled', cancelled_at = CURRENT_TIMESTAMP, cancelled_by = 'system' WHERE id = $1`,
+        [history.id]
+      )
+    }
+
+    if (recipientId) {
+      await createNotification({
+        user_id: recipientId,
+        type: 'donation',
+        title: 'Doação cancelada',
+        message: reason,
+        reference_id: donation.id,
+        reference_type: 'donation',
+      })
+    }
+  }
+}
+
 export async function warnUser(req: AdminAuthRequest, res: Response) {
   const { id } = req.params
   const { ban_days, reason, report_id } = req.body
@@ -117,6 +179,14 @@ export async function warnUser(req: AdminAuthRequest, res: Response) {
        RETURNING id, status, banned_until`,
       [banDays, id]
     )
+
+    if (banDays > 0) {
+      await cancelActiveTransactionsForUser(Number(id), 'O doador foi suspenso e a transação foi cancelada.')
+    }
+
+    if (report_id) {
+      await resolveReportWithAction(Number(report_id), req.adminId as number, reason ?? null)
+    }
 
     const warningCount = await pool.query(
       `SELECT COUNT(*)::int AS count FROM moderation_actions WHERE user_id = $1 AND action_type = 'warning'`,
@@ -153,6 +223,12 @@ export async function disableUser(req: AdminAuthRequest, res: Response) {
        VALUES ($1, $2, $3, 'disable_account', $4)`,
       [id, req.adminId, report_id ?? null, reason ?? null]
     )
+
+    await cancelActiveTransactionsForUser(Number(id), 'A conta do doador foi desativada e a transação foi cancelada.')
+
+    if (report_id) {
+      await resolveReportWithAction(Number(report_id), req.adminId as number, reason ?? null)
+    }
 
     return res.status(200).json({ user: rows[0] })
   } catch (error) {
@@ -213,6 +289,16 @@ export async function listDisabledAccounts(req: AdminAuthRequest, res: Response)
     return res.status(200).json({ accounts: rows, grace_period_days: ACCOUNT_DELETION_GRACE_DAYS })
   } catch (error) {
     console.error('List disabled accounts error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+}
+
+export async function listAdmins(req: AdminAuthRequest, res: Response) {
+  try {
+    const { rows } = await pool.query('SELECT id, full_name, email FROM admins ORDER BY full_name ASC')
+    return res.status(200).json({ admins: rows })
+  } catch (error) {
+    console.error('List admins error:', error)
     return res.status(500).json({ error: 'Internal server error' })
   }
 }

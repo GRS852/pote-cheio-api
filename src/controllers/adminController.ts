@@ -191,7 +191,20 @@ export async function listDisabledAccounts(req: AdminAuthRequest, res: Response)
   try {
     const { rows } = await pool.query(
       `SELECT u.id, u.email, u.disabled_at, p.full_name,
-              GREATEST(0, ${ACCOUNT_DELETION_GRACE_DAYS} - EXTRACT(DAY FROM CURRENT_TIMESTAMP - u.disabled_at))::int AS days_remaining
+              GREATEST(0, ${ACCOUNT_DELETION_GRACE_DAYS} - EXTRACT(DAY FROM CURRENT_TIMESTAMP - u.disabled_at))::int AS days_remaining,
+              (
+                SELECT ma.reason FROM moderation_actions ma
+                WHERE ma.user_id = u.id AND ma.action_type = 'disable_account'
+                ORDER BY ma.created_at DESC LIMIT 1
+              ) AS disable_reason,
+              (
+                SELECT COUNT(*)::int FROM moderation_actions ma
+                WHERE ma.user_id = u.id AND ma.action_type = 'warning' AND COALESCE(ma.ban_days, 0) = 0
+              ) AS warning_count,
+              (
+                SELECT COUNT(*)::int FROM moderation_actions ma
+                WHERE ma.user_id = u.id AND ma.action_type = 'warning' AND ma.ban_days > 0
+              ) AS suspension_count
        FROM users u
        LEFT JOIN profiles p ON p.user_id = u.id
        WHERE u.status = 'disabled'

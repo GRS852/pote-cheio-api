@@ -82,6 +82,69 @@ export async function myDonations(req: AuthRequest, res: Response) {
   }
 }
 
+// Doações em andamento do usuário logado, nas duas pontas (doando e
+// recebendo), já classificadas por etapa: pending | accepted | shipped.
+export async function donationStatus(req: AuthRequest, res: Response) {
+  try {
+    const [donorPending, recipientPending, transactions] = await Promise.all([
+      pool.query(
+        `SELECT d.id AS donation_id, d.title, d.photo_url, d.created_at AS updated_at,
+                d.reserved_for_user_id AS other_user_id, rp.full_name AS other_user_name, d.reserved_until,
+                (SELECT COUNT(*)::int FROM wishlist w WHERE w.donation_id = d.id) AS interested_count
+         FROM donations d
+         LEFT JOIN profiles rp ON rp.user_id = d.reserved_for_user_id
+         WHERE d.user_id = $1 AND (
+           (d.status = 'available' AND EXISTS (SELECT 1 FROM wishlist w WHERE w.donation_id = d.id))
+           OR (d.status = 'reserved' AND d.reserved_for_user_id IS NOT NULL)
+         )`,
+        [req.userId]
+      ),
+      pool.query(
+        `SELECT d.id AS donation_id, d.title, d.photo_url, w.created_at AS updated_at,
+                d.user_id AS other_user_id, p.full_name AS other_user_name, d.reserved_until,
+                (d.status = 'reserved') AS reserved_for_me
+         FROM wishlist w
+         JOIN donations d ON d.id = w.donation_id
+         LEFT JOIN profiles p ON p.user_id = d.user_id
+         WHERE w.user_id = $1
+           AND (d.status = 'available' OR (d.status = 'reserved' AND d.reserved_for_user_id = $1))`,
+        [req.userId]
+      ),
+      pool.query(
+        `SELECT d.id AS donation_id, d.title, d.photo_url, h.status AS transaction_status,
+                COALESCE(h.shipped_at, h.donated_at) AS updated_at,
+                CASE WHEN h.donor_id = $1 THEN 'donor' ELSE 'recipient' END AS role,
+                CASE WHEN h.donor_id = $1 THEN h.recipient_id ELSE h.donor_id END AS other_user_id,
+                op.full_name AS other_user_name
+         FROM donation_history h
+         JOIN donations d ON d.id = h.donation_id
+         LEFT JOIN profiles op ON op.user_id = CASE WHEN h.donor_id = $1 THEN h.recipient_id ELSE h.donor_id END
+         WHERE (h.donor_id = $1 OR h.recipient_id = $1)
+           AND h.status IN ('accepted_awaiting_shipment', 'shipped')
+           AND d.status = 'reserved'`,
+        [req.userId]
+      ),
+    ])
+
+    const items = [
+      ...donorPending.rows.map(r => ({ ...r, role: 'donor', stage: 'pending', reserved_for_me: false })),
+      ...recipientPending.rows.map(r => ({ ...r, role: 'recipient', stage: 'pending', interested_count: null })),
+      ...transactions.rows.map(({ transaction_status, ...r }) => ({
+        ...r,
+        stage: transaction_status === 'shipped' ? 'shipped' : 'accepted',
+        reserved_until: null,
+        interested_count: null,
+        reserved_for_me: false,
+      })),
+    ].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
+
+    return res.status(200).json({ items })
+  } catch (error) {
+    console.error('Donation status error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+}
+
 export async function getDonation(req: AuthRequest, res: Response) {
   const { id } = req.params
 
@@ -101,6 +164,10 @@ export async function getDonation(req: AuthRequest, res: Response) {
     }
 
     const donation = rows[0]
+    if (donation.status === 'removed' && donation.user_id !== req.userId) {
+      return res.status(404).json({ error: 'Donation not found' })
+    }
+
     const photos = await pool.query(
       `SELECT photo_url FROM donation_photos WHERE donation_id = $1 ORDER BY position ASC`,
       [id]

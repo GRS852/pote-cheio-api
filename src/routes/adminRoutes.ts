@@ -10,6 +10,7 @@ import {
   listDisabledAccounts,
   getStats,
   listAdmins,
+  removeDonation,
 } from '../controllers/adminController'
 import { adminAuthMiddleware } from '../middlewares/adminAuthMiddleware'
 
@@ -26,6 +27,8 @@ router.patch('/reports/:id', adminAuthMiddleware, updateReportStatus)
 router.post('/reports/:id/transfer', adminAuthMiddleware, transferReport)
 
 router.get('/accounts/disabled', adminAuthMiddleware, listDisabledAccounts)
+
+router.post('/donations/:id/remove', adminAuthMiddleware, removeDonation)
 
 router.get('/users/:id', adminAuthMiddleware, getUserActivity)
 router.post('/users/:id/warn', adminAuthMiddleware, warnUser)

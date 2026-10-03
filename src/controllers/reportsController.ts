@@ -208,7 +208,8 @@ export async function updateReportStatus(req: AdminAuthRequest, res: Response) {
     return res.status(200).json({ report: rows[0] })
   } catch (error) {
     console.error('Update report error:', error)
-    return res.status(500).json({ error: 'Internal server error' })
+    // TODO: diagnóstico temporário do erro 500 ao assumir/resolver denúncia — reverter após identificar a causa.
+    return res.status(500).json({ error: 'Internal server error', detail: error instanceof Error ? error.message : String(error) })
   }
 }
 

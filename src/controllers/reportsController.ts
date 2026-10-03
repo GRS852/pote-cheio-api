@@ -198,7 +198,7 @@ export async function updateReportStatus(req: AdminAuthRequest, res: Response) {
        SET status = $1,
            assigned_admin_id = $2,
            resolved_at = CASE WHEN $3 THEN CURRENT_TIMESTAMP ELSE NULL END,
-           resolved_by = CASE WHEN $3 THEN $4 ELSE NULL END,
+           resolved_by = CASE WHEN $3 THEN $4::integer ELSE NULL END,
            resolution_comment = CASE WHEN $3 THEN $6 ELSE resolution_comment END
        WHERE id = $5
        RETURNING *`,
@@ -208,8 +208,7 @@ export async function updateReportStatus(req: AdminAuthRequest, res: Response) {
     return res.status(200).json({ report: rows[0] })
   } catch (error) {
     console.error('Update report error:', error)
-    // TODO: diagnóstico temporário do erro 500 ao assumir/resolver denúncia — reverter após identificar a causa.
-    return res.status(500).json({ error: 'Internal server error', detail: error instanceof Error ? error.message : String(error) })
+    return res.status(500).json({ error: 'Internal server error' })
   }
 }
 

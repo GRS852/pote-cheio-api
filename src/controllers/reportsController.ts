@@ -208,6 +208,42 @@ export async function updateReportStatus(req: AdminAuthRequest, res: Response) {
     return res.status(200).json({ report: rows[0] })
   } catch (error) {
     console.error('Update report error:', error)
+    // TODO: diagnóstico temporário do erro 500 ao assumir/resolver denúncia — reverter após identificar a causa.
+    return res.status(500).json({ error: 'Internal server error', detail: error instanceof Error ? error.message : String(error) })
+  }
+}
+
+export async function transferReport(req: AdminAuthRequest, res: Response) {
+  const { id } = req.params
+  const { to_admin_id, reason } = req.body
+
+  if (!to_admin_id || !reason || !String(reason).trim()) {
+    return res.status(400).json({ error: 'to_admin_id and reason are required' })
+  }
+
+  try {
+    const current = await pool.query('SELECT assigned_admin_id FROM reports WHERE id = $1', [id])
+    if (current.rows.length === 0) return res.status(404).json({ error: 'Report not found' })
+    if (current.rows[0].assigned_admin_id !== req.adminId) {
+      return res.status(409).json({ error: 'Only the administrator currently assigned can transfer this report' })
+    }
+
+    const targetAdmin = await pool.query('SELECT id FROM admins WHERE id = $1', [to_admin_id])
+    if (targetAdmin.rows.length === 0) return res.status(404).json({ error: 'Target administrator not found' })
+
+    const { rows } = await pool.query(
+      `UPDATE reports SET assigned_admin_id = $1, status = 'reviewing' WHERE id = $2 RETURNING *`,
+      [to_admin_id, id]
+    )
+
+    await pool.query(
+      `INSERT INTO report_transfers (report_id, from_admin_id, to_admin_id, reason) VALUES ($1, $2, $3, $4)`,
+      [id, req.adminId, to_admin_id, reason.trim()]
+    )
+
+    return res.status(200).json({ report: rows[0] })
+  } catch (error) {
+    console.error('Transfer report error:', error)
     return res.status(500).json({ error: 'Internal server error' })
   }
 }

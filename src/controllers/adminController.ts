@@ -293,6 +293,96 @@ export async function listDisabledAccounts(req: AdminAuthRequest, res: Response)
   }
 }
 
+// Remove só a publicação (sem punir a conta): some do catálogo, cancela a
+// negociação em andamento, avisa o doador e fica no histórico de moderação.
+export async function removeDonation(req: AdminAuthRequest, res: Response) {
+  const { id } = req.params
+  const { reason, report_id } = req.body
+
+  if (!reason || !String(reason).trim()) {
+    return res.status(400).json({ error: 'reason is required' })
+  }
+  const trimmedReason = String(reason).trim()
+
+  try {
+    if (report_id) {
+      const lockError = await checkReportLock(Number(report_id), req.adminId as number)
+      if (lockError === 'Report not found') return res.status(404).json({ error: lockError })
+      if (lockError) return res.status(409).json({ error: lockError })
+    }
+
+    const donationResult = await pool.query(
+      `SELECT id, user_id, title, status, reserved_for_user_id FROM donations WHERE id = $1`,
+      [id]
+    )
+    if (donationResult.rows.length === 0) return res.status(404).json({ error: 'Donation not found' })
+    const donation = donationResult.rows[0]
+    if (donation.status === 'removed') return res.status(400).json({ error: 'Donation already removed' })
+
+    const { rows: historyRows } = await pool.query(
+      `SELECT id, recipient_id FROM donation_history
+       WHERE donation_id = $1 AND status IN ('accepted_awaiting_shipment', 'shipped')
+       ORDER BY id DESC LIMIT 1`,
+      [id]
+    )
+    const history = historyRows[0]
+    const recipientId: number | null =
+      history?.recipient_id ?? (donation.status === 'reserved' ? donation.reserved_for_user_id : null)
+    const cancelReason = recipientId ? 'A publicação foi removida pela moderação e a negociação foi cancelada.' : null
+
+    if (history) {
+      await pool.query(
+        `UPDATE donation_history SET status = 'cancelled', cancelled_at = CURRENT_TIMESTAMP, cancelled_by = 'system' WHERE id = $1`,
+        [history.id]
+      )
+    }
+
+    await pool.query(
+      `UPDATE donations
+       SET status = 'removed', removed_reason = $1, removed_at = CURRENT_TIMESTAMP, removed_by_admin_id = $2,
+           reserved_for_user_id = NULL, reserved_until = NULL,
+           cancel_reason = COALESCE($3::text, cancel_reason)
+       WHERE id = $4`,
+      [trimmedReason, req.adminId, cancelReason, id]
+    )
+
+    await pool.query(
+      `INSERT INTO moderation_actions (user_id, admin_id, report_id, action_type, reason, donation_id)
+       VALUES ($1, $2, $3, 'remove_post', $4, $5)`,
+      [donation.user_id, req.adminId, report_id ?? null, trimmedReason, id]
+    )
+
+    await createNotification({
+      user_id: donation.user_id,
+      type: 'donation',
+      title: 'Publicação removida',
+      message: `Sua publicação "${donation.title}" foi removida pela moderação. Motivo: ${trimmedReason}`,
+      reference_id: Number(id),
+      reference_type: 'donation',
+    })
+
+    if (recipientId) {
+      await createNotification({
+        user_id: recipientId,
+        type: 'donation',
+        title: 'Doação cancelada',
+        message: `"${donation.title}" foi removida pela moderação e a negociação foi cancelada.`,
+        reference_id: Number(id),
+        reference_type: 'donation',
+      })
+    }
+
+    if (report_id) {
+      await resolveReportWithAction(Number(report_id), req.adminId as number, trimmedReason)
+    }
+
+    return res.status(200).json({ message: 'Donation removed' })
+  } catch (error) {
+    console.error('Remove donation error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+}
+
 export async function listAdmins(req: AdminAuthRequest, res: Response) {
   try {
     const { rows } = await pool.query('SELECT id, full_name, email FROM admins ORDER BY full_name ASC')

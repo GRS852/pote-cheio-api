@@ -5,6 +5,27 @@ import pool from '../db'
 import { AuthRequest } from '../middlewares/authMiddleware'
 import { sendPasswordResetEmail } from '../services/emailService'
 
+// Avisos de moderação do PRÓPRIO usuário logado (nunca exposto em rotas públicas).
+export async function getMyModerationNotices(req: AuthRequest, res: Response) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT ma.id, ma.action_type, ma.ban_days, ma.reason, ma.created_at,
+              COALESCE(d.title, rd.title) AS donation_title
+       FROM moderation_actions ma
+       LEFT JOIN donations d ON d.id = ma.donation_id
+       LEFT JOIN reports r ON r.id = ma.report_id
+       LEFT JOIN donations rd ON rd.id = r.donation_id
+       WHERE ma.user_id = $1 AND ma.action_type IN ('warning', 'remove_post')
+       ORDER BY ma.created_at DESC`,
+      [req.userId]
+    )
+    return res.status(200).json({ notices: rows })
+  } catch (error) {
+    console.error('Get moderation notices error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+}
+
 export async function register(req: Request, res: Response) {
   const { full_name, email, password, birth_date } = req.body
 

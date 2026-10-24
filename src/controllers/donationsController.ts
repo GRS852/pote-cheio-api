@@ -1,7 +1,7 @@
 import { Response } from 'express'
 import pool from '../db'
 import { AuthRequest } from '../middlewares/authMiddleware'
-import { createNotification } from '../services/notificationsService'
+import { createNotification, notifyDonationFavoriters } from '../services/notificationsService'
 
 const MAX_DONATION_PHOTOS = 5
 
@@ -70,7 +70,7 @@ export async function myDonations(req: AuthRequest, res: Response) {
               (SELECT COUNT(*)::int FROM wishlist w WHERE w.donation_id = d.id) AS interested_count
        FROM donations d
        LEFT JOIN profiles rp ON rp.user_id = d.reserved_for_user_id
-       WHERE d.user_id = $1
+       WHERE d.user_id = $1 AND d.status <> 'closed'
        ORDER BY d.created_at DESC`,
       [req.userId]
     )
@@ -82,11 +82,60 @@ export async function myDonations(req: AuthRequest, res: Response) {
   }
 }
 
-// Doações em andamento do usuário logado, nas duas pontas (doando e
-// recebendo), já classificadas por etapa: pending | accepted | shipped.
+// Entregas em andamento do usuário logado ("Ver entregas"): só as
+// negociações já aceitas, nas duas pontas (enviando e recebendo),
+// classificadas por etapa: accepted | shipped.
 export async function donationStatus(req: AuthRequest, res: Response) {
   try {
-    const [donorPending, recipientPending, transactions] = await Promise.all([
+    const { rows } = await pool.query(
+      `SELECT d.id AS donation_id, d.title, d.photo_url, h.status AS transaction_status,
+              COALESCE(h.shipped_at, h.donated_at) AS updated_at,
+              CASE WHEN h.donor_id = $1 THEN 'donor' ELSE 'recipient' END AS role,
+              CASE WHEN h.donor_id = $1 THEN h.recipient_id ELSE h.donor_id END AS other_user_id,
+              op.full_name AS other_user_name
+       FROM donation_history h
+       JOIN donations d ON d.id = h.donation_id
+       LEFT JOIN profiles op ON op.user_id = CASE WHEN h.donor_id = $1 THEN h.recipient_id ELSE h.donor_id END
+       WHERE (h.donor_id = $1 OR h.recipient_id = $1)
+         AND h.status IN ('accepted_awaiting_shipment', 'shipped')
+         AND d.status = 'reserved'
+       ORDER BY updated_at DESC`,
+      [req.userId]
+    )
+
+    const items = rows.map(({ transaction_status, ...r }) => ({
+      ...r,
+      stage: transaction_status === 'shipped' ? 'shipped' : 'accepted',
+    }))
+
+    return res.status(200).json({ items })
+  } catch (error) {
+    console.error('Donation status error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+}
+
+// Histórico completo do usuário logado ("Ver doações"), nas duas pontas:
+//   pending   -> ainda sem doação aceita (alguém demonstrou interesse / reserva)
+//   accepted | shipped -> negociação em andamento
+//   completed -> doada / recebida
+//   cancelled -> negociação cancelada
+//   closed | removed -> publicação do usuário encerrada por ele ou pela moderação
+export async function donationHistory(req: AuthRequest, res: Response) {
+  try {
+    const [transactions, donorPending, recipientPending, ownClosed] = await Promise.all([
+      pool.query(
+        `SELECT h.id AS history_id, d.id AS donation_id, d.title, d.photo_url, h.status AS transaction_status,
+                COALESCE(h.finalized_at, h.cancelled_at, h.shipped_at, h.donated_at) AS updated_at,
+                CASE WHEN h.donor_id = $1 THEN 'donor' ELSE 'recipient' END AS role,
+                CASE WHEN h.donor_id = $1 THEN h.recipient_id ELSE h.donor_id END AS other_user_id,
+                op.full_name AS other_user_name
+         FROM donation_history h
+         JOIN donations d ON d.id = h.donation_id
+         LEFT JOIN profiles op ON op.user_id = CASE WHEN h.donor_id = $1 THEN h.recipient_id ELSE h.donor_id END
+         WHERE h.donor_id = $1 OR h.recipient_id = $1`,
+        [req.userId]
+      ),
       pool.query(
         `SELECT d.id AS donation_id, d.title, d.photo_url, d.created_at AS updated_at,
                 d.reserved_for_user_id AS other_user_id, rp.full_name AS other_user_name, d.reserved_until,
@@ -95,7 +144,11 @@ export async function donationStatus(req: AuthRequest, res: Response) {
          LEFT JOIN profiles rp ON rp.user_id = d.reserved_for_user_id
          WHERE d.user_id = $1 AND (
            (d.status = 'available' AND EXISTS (SELECT 1 FROM wishlist w WHERE w.donation_id = d.id))
-           OR (d.status = 'reserved' AND d.reserved_for_user_id IS NOT NULL)
+           OR (d.status = 'reserved' AND d.reserved_for_user_id IS NOT NULL
+               AND NOT EXISTS (
+                 SELECT 1 FROM donation_history h
+                 WHERE h.donation_id = d.id AND h.status IN ('accepted_awaiting_shipment', 'shipped')
+               ))
          )`,
         [req.userId]
       ),
@@ -107,40 +160,50 @@ export async function donationStatus(req: AuthRequest, res: Response) {
          JOIN donations d ON d.id = w.donation_id
          LEFT JOIN profiles p ON p.user_id = d.user_id
          WHERE w.user_id = $1
-           AND (d.status = 'available' OR (d.status = 'reserved' AND d.reserved_for_user_id = $1))`,
+           AND (d.status = 'available' OR (d.status = 'reserved' AND d.reserved_for_user_id = $1))
+           AND NOT EXISTS (
+             SELECT 1 FROM donation_history h
+             WHERE h.donation_id = d.id AND h.status IN ('accepted_awaiting_shipment', 'shipped')
+           )`,
         [req.userId]
       ),
       pool.query(
-        `SELECT d.id AS donation_id, d.title, d.photo_url, h.status AS transaction_status,
-                COALESCE(h.shipped_at, h.donated_at) AS updated_at,
-                CASE WHEN h.donor_id = $1 THEN 'donor' ELSE 'recipient' END AS role,
-                CASE WHEN h.donor_id = $1 THEN h.recipient_id ELSE h.donor_id END AS other_user_id,
-                op.full_name AS other_user_name
-         FROM donation_history h
-         JOIN donations d ON d.id = h.donation_id
-         LEFT JOIN profiles op ON op.user_id = CASE WHEN h.donor_id = $1 THEN h.recipient_id ELSE h.donor_id END
-         WHERE (h.donor_id = $1 OR h.recipient_id = $1)
-           AND h.status IN ('accepted_awaiting_shipment', 'shipped')
-           AND d.status = 'reserved'`,
+        `SELECT d.id AS donation_id, d.title, d.photo_url, d.status,
+                COALESCE(d.closed_at, d.removed_at, d.cancelled_at, d.created_at) AS updated_at
+         FROM donations d
+         WHERE d.user_id = $1 AND d.status IN ('closed', 'removed', 'cancelled')`,
         [req.userId]
       ),
     ])
 
+    const transactionStage = (status: string) => {
+      if (status === 'finalized_manual' || status === 'finalized_automatic') return 'completed'
+      if (status === 'shipped') return 'shipped'
+      if (status === 'cancelled') return 'cancelled'
+      return 'accepted'
+    }
+
     const items = [
-      ...donorPending.rows.map(r => ({ ...r, role: 'donor', stage: 'pending', reserved_for_me: false })),
-      ...recipientPending.rows.map(r => ({ ...r, role: 'recipient', stage: 'pending', interested_count: null })),
-      ...transactions.rows.map(({ transaction_status, ...r }) => ({
+      ...transactions.rows.map(({ history_id, transaction_status, ...r }) => ({
         ...r,
-        stage: transaction_status === 'shipped' ? 'shipped' : 'accepted',
-        reserved_until: null,
-        interested_count: null,
-        reserved_for_me: false,
+        key: `h${history_id}`,
+        stage: transactionStage(transaction_status),
+      })),
+      ...donorPending.rows.map(r => ({ ...r, key: `p${r.donation_id}`, role: 'donor', stage: 'pending' })),
+      ...recipientPending.rows.map(r => ({ ...r, key: `w${r.donation_id}`, role: 'recipient', stage: 'pending' })),
+      ...ownClosed.rows.map(({ status, ...r }) => ({
+        ...r,
+        key: `c${r.donation_id}`,
+        role: 'donor',
+        stage: status === 'removed' ? 'removed' : 'closed',
+        other_user_id: null,
+        other_user_name: null,
       })),
     ].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
 
     return res.status(200).json({ items })
   } catch (error) {
-    console.error('Donation status error:', error)
+    console.error('Donation history error:', error)
     return res.status(500).json({ error: 'Internal server error' })
   }
 }
@@ -151,12 +214,22 @@ export async function getDonation(req: AuthRequest, res: Response) {
   try {
     const { rows } = await pool.query(
       `SELECT d.*, d.user_id AS donor_id, p.full_name AS donor_name,
-              u.created_at AS donor_created_at, u.avatar_url AS donor_avatar_url
+              u.created_at AS donor_created_at, u.avatar_url AS donor_avatar_url,
+              EXISTS (
+                SELECT 1 FROM donation_history h
+                WHERE h.donation_id = d.id AND h.recipient_id = $2
+                  AND h.status IN ('finalized_manual', 'finalized_automatic')
+              ) AS received_by_me,
+              EXISTS (
+                SELECT 1 FROM donation_history h
+                WHERE h.donation_id = d.id AND h.recipient_id = $2
+                  AND h.status IN ('accepted_awaiting_shipment', 'shipped')
+              ) AS is_my_transaction
        FROM donations d
        JOIN profiles p ON p.user_id = d.user_id
        JOIN users u ON u.id = d.user_id
        WHERE d.id = $1`,
-      [id]
+      [id, req.userId ?? null]
     )
 
     if (rows.length === 0) {
@@ -164,8 +237,18 @@ export async function getDonation(req: AuthRequest, res: Response) {
     }
 
     const donation = rows[0]
-    if (donation.status === 'removed' && donation.user_id !== req.userId) {
-      return res.status(404).json({ error: 'Donation not found' })
+    const isOwner = donation.user_id === req.userId
+
+    // Publicação retirada pela moderação: quem não é o dono só fica sabendo
+    // que ela foi retirada, sem ver o conteúdo nem o motivo.
+    if (donation.status === 'removed' && !isOwner) {
+      return res.status(200).json({
+        donation: { id: donation.id, status: 'removed', received_by_me: false, is_my_transaction: false },
+      })
+    }
+    if (!isOwner) {
+      delete donation.removed_reason
+      delete donation.cancel_reason
     }
 
     const photos = await pool.query(
@@ -323,7 +406,12 @@ export async function removeFromWishlist(req: AuthRequest, res: Response) {
 export async function myWishlist(req: AuthRequest, res: Response) {
   try {
     const { rows } = await pool.query(
-      `SELECT d.*, p.full_name AS donor_name, w.created_at AS added_at
+      `SELECT d.*, p.full_name AS donor_name, w.created_at AS added_at,
+              EXISTS (
+                SELECT 1 FROM donation_history h
+                WHERE h.donation_id = d.id AND h.recipient_id = $1
+                  AND h.status IN ('finalized_manual', 'finalized_automatic')
+              ) AS received_by_me
        FROM wishlist w
        JOIN donations d ON d.id = w.donation_id
        JOIN profiles p ON p.user_id = d.user_id
@@ -332,35 +420,83 @@ export async function myWishlist(req: AuthRequest, res: Response) {
       [req.userId]
     )
 
-    return res.status(200).json({ donations: rows })
+    // Motivos de cancelamento/remoção são só do dono da publicação
+    const donations = rows.map(({ cancel_reason, removed_reason, ...d }) => d)
+
+    return res.status(200).json({ donations })
   } catch (error) {
     console.error('My wishlist error:', error)
     return res.status(500).json({ error: 'Internal server error' })
   }
 }
 
+// "Excluir" do dono: em vez de apagar do banco (o que levava junto os
+// favoritos de quem marcou o item), encerra a publicação. Ela sai do
+// catálogo e de "Minhas doações", cancela qualquer negociação em andamento e
+// avisa quem tinha favoritado.
 export async function deleteDonation(req: AuthRequest, res: Response) {
   const { id } = req.params
 
   try {
-    const donation = await pool.query(
-      `SELECT id, user_id FROM donations WHERE id = $1`,
+    const donationResult = await pool.query(
+      `SELECT id, user_id, title, status, reserved_for_user_id FROM donations WHERE id = $1`,
       [id]
     )
 
-    if (donation.rows.length === 0) {
+    if (donationResult.rows.length === 0) {
       return res.status(404).json({ error: 'Donation not found' })
     }
 
-    if (donation.rows[0].user_id !== req.userId) {
-      return res.status(403).json({ message: 'Você não tem permissão para excluir esta doação' })
+    const donation = donationResult.rows[0]
+    if (donation.user_id !== req.userId) {
+      return res.status(403).json({ message: 'Você não tem permissão para encerrar esta doação' })
+    }
+    if (['completed', 'closed', 'removed'].includes(donation.status)) {
+      return res.status(400).json({ error: 'Esta doação não pode mais ser encerrada' })
     }
 
-    await pool.query(`DELETE FROM donations WHERE id = $1`, [id])
+    const { rows: historyRows } = await pool.query(
+      `SELECT id, recipient_id FROM donation_history
+       WHERE donation_id = $1 AND status IN ('accepted_awaiting_shipment', 'shipped')
+       ORDER BY id DESC LIMIT 1`,
+      [id]
+    )
+    const history = historyRows[0]
+    const recipientId: number | null =
+      history?.recipient_id ?? (donation.status === 'reserved' ? donation.reserved_for_user_id : null)
 
-    return res.status(200).json({ message: 'Doação excluída com sucesso' })
+    if (history) {
+      await pool.query(
+        `UPDATE donation_history SET status = 'cancelled', cancelled_at = CURRENT_TIMESTAMP, cancelled_by = 'donor' WHERE id = $1`,
+        [history.id]
+      )
+    }
+
+    await pool.query(
+      `UPDATE donations
+       SET status = 'closed', closed_at = CURRENT_TIMESTAMP,
+           reserved_for_user_id = NULL, reserved_until = NULL,
+           cancel_reason = COALESCE($1::text, cancel_reason)
+       WHERE id = $2`,
+      [recipientId ? 'O doador encerrou a publicação e a negociação foi cancelada.' : null, id]
+    )
+
+    if (recipientId) {
+      await createNotification({
+        user_id: recipientId,
+        type: 'donation',
+        title: 'Doação cancelada',
+        message: `O doador encerrou "${donation.title}" e a negociação foi cancelada.`,
+        reference_id: Number(id),
+        reference_type: 'donation',
+      })
+    }
+
+    await notifyDonationFavoriters(Number(id), donation.title, recipientId ? [recipientId] : [])
+
+    return res.status(200).json({ message: 'Doação encerrada com sucesso' })
   } catch (error) {
-    console.error('Delete donation error:', error)
+    console.error('Close donation error:', error)
     return res.status(500).json({ error: 'Internal server error' })
   }
 }

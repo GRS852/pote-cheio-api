@@ -26,3 +26,27 @@ export async function createNotification(params: CreateNotificationParams) {
 
   return rows[0]
 }
+
+// Avisa todo mundo que favoritou a doação que ela foi encerrada (pelo dono
+// ou pela moderação). Quem já recebeu um aviso específico (ex: a pessoa com
+// quem a negociação foi cancelada) fica de fora pra não receber dois.
+export async function notifyDonationFavoriters(donationId: number, title: string, excludeUserIds: number[] = []) {
+  const { rows } = await pool.query(
+    `SELECT w.user_id FROM wishlist w
+     JOIN donations d ON d.id = w.donation_id
+     WHERE w.donation_id = $1 AND w.user_id <> d.user_id`,
+    [donationId]
+  )
+
+  for (const { user_id } of rows) {
+    if (excludeUserIds.includes(user_id)) continue
+    await createNotification({
+      user_id,
+      type: 'donation',
+      title: 'Essa doação foi encerrada',
+      message: `"${title}", que estava nos seus favoritos, foi encerrada e não está mais disponível.`,
+      reference_id: donationId,
+      reference_type: 'donation',
+    })
+  }
+}

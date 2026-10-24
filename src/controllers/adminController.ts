@@ -1,7 +1,7 @@
 import { Response } from 'express'
 import pool from '../db'
 import { AdminAuthRequest } from '../middlewares/adminAuthMiddleware'
-import { createNotification } from '../services/notificationsService'
+import { createNotification, notifyDonationFavoriters } from '../services/notificationsService'
 
 export async function getUserActivity(req: AdminAuthRequest, res: Response) {
   const { id } = req.params
@@ -371,6 +371,8 @@ export async function removeDonation(req: AdminAuthRequest, res: Response) {
         reference_type: 'donation',
       })
     }
+
+    await notifyDonationFavoriters(Number(id), donation.title, recipientId ? [recipientId] : [])
 
     if (report_id) {
       await resolveReportWithAction(Number(report_id), req.adminId as number, trimmedReason)

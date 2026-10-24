@@ -74,10 +74,17 @@ export async function listMessages(req: AuthRequest, res: Response) {
       return res.status(403).json({ error: 'Access denied' })
     }
 
-    const { rows } = await pool.query(
-      `SELECT * FROM messages WHERE conversation_id = $1 ORDER BY sent_at ASC`,
-      [id]
-    )
+    // ?after=<id> traz só as mensagens novas (usado pela atualização periódica do app)
+    const after = Number(req.query.after)
+    const { rows } = Number.isInteger(after) && after > 0
+      ? await pool.query(
+          `SELECT * FROM messages WHERE conversation_id = $1 AND id > $2 ORDER BY sent_at ASC`,
+          [id, after]
+        )
+      : await pool.query(
+          `SELECT * FROM messages WHERE conversation_id = $1 ORDER BY sent_at ASC`,
+          [id]
+        )
 
     return res.status(200).json({ messages: rows })
   } catch (error) {

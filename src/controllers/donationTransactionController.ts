@@ -182,7 +182,7 @@ export async function cancelTransaction(req: AuthRequest, res: Response) {
 
     await pool.query(
       `UPDATE donations
-       SET status = 'cancelled', cancel_reason = $1, cancelled_at = CURRENT_TIMESTAMP,
+       SET status = 'available', cancel_reason = $1, cancelled_at = CURRENT_TIMESTAMP,
            reserved_for_user_id = NULL, reserved_until = NULL
        WHERE id = $2`,
       [reason.trim(), id]

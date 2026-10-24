@@ -15,6 +15,7 @@ import {
   reserveDonation,
   unreserveDonation,
   donationStatus,
+  donationHistory,
 } from '../controllers/donationsController'
 import {
   getTransaction,
@@ -36,6 +37,7 @@ router.get('/', authMiddleware, listDonations)
 router.get('/mine', authMiddleware, myDonations)
 router.get('/wishlist', authMiddleware, myWishlist)
 router.get('/status', authMiddleware, donationStatus)
+router.get('/history', authMiddleware, donationHistory)
 router.get('/:id', optionalAuthMiddleware, getDonation)
 router.delete('/:id', authMiddleware, deleteDonation)
 router.patch('/:id/status', authMiddleware, updateStatus)

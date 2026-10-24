@@ -147,7 +147,7 @@ export async function getReport(req: AdminAuthRequest, res: Response) {
 
     if (report.conversation_id) {
       const messages = await pool.query(
-        'SELECT * FROM messages WHERE conversation_id = $1 ORDER BY sent_at ASC',
+        'SELECT * FROM messages WHERE conversation_id = $1 ORDER BY sent_at ASC, id ASC',
         [report.conversation_id]
       )
       report.messages = messages.rows

@@ -2,6 +2,7 @@ import { Response } from 'express'
 import pool from '../db'
 import { AuthRequest } from '../middlewares/authMiddleware'
 import { createNotification, notifyDonationFavoriters } from '../services/notificationsService'
+import { addConversationTopic, findOrCreatePairConversation } from '../services/conversationsService'
 
 const MAX_DONATION_PHOTOS = 5
 
@@ -353,23 +354,11 @@ export async function addToWishlist(req: AuthRequest, res: Response) {
       [donation_id, user_id]
     )
 
-    const existing = await pool.query(
-      `SELECT id FROM conversations WHERE donation_id = $1 AND sender_id = $2`,
-      [donation_id, user_id]
-    )
+    // Mesma conversa de sempre entre os dois; a doação entra como novo assunto
+    const conversation_id = await findOrCreatePairConversation(user_id as number, donation.rows[0].user_id, Number(donation_id))
+    const newTopic = await addConversationTopic(conversation_id, Number(donation_id), user_id as number)
 
-    let conversation_id: number
-
-    if (existing.rows.length > 0) {
-      conversation_id = existing.rows[0].id
-    } else {
-      const newConv = await pool.query(
-        `INSERT INTO conversations (donation_id, sender_id, recipient_id)
-         VALUES ($1, $2, $3) RETURNING id`,
-        [donation_id, user_id, donation.rows[0].user_id]
-      )
-      conversation_id = newConv.rows[0].id
-
+    if (newTopic) {
       await createNotification({
         user_id: donation.rows[0].user_id,
         type: 'interest',
@@ -523,10 +512,12 @@ export async function getInterestedUsers(req: AuthRequest, res: Response) {
        FROM wishlist w
        JOIN profiles p ON p.user_id = w.user_id
        JOIN users u ON u.id = w.user_id
-       LEFT JOIN conversations c ON c.donation_id = w.donation_id AND c.sender_id = w.user_id
+       LEFT JOIN conversations c
+         ON LEAST(c.sender_id, c.recipient_id) = LEAST(w.user_id, $2::int)
+        AND GREATEST(c.sender_id, c.recipient_id) = GREATEST(w.user_id, $2::int)
        WHERE w.donation_id = $1
        ORDER BY w.created_at ASC`,
-      [donation_id]
+      [donation_id, req.userId]
     )
 
     return res.status(200).json({ interested: rows })

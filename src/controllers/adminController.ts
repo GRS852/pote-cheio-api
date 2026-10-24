@@ -451,7 +451,7 @@ export async function getConversationMessages(req: AdminAuthRequest, res: Respon
     if (conversation.rows.length === 0) return res.status(404).json({ error: 'Conversation not found' })
 
     const messages = await pool.query(
-      'SELECT * FROM messages WHERE conversation_id = $1 ORDER BY sent_at ASC',
+      'SELECT * FROM messages WHERE conversation_id = $1 ORDER BY sent_at ASC, id ASC',
       [id]
     )
 

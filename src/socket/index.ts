@@ -62,7 +62,7 @@ export function initSocket(httpServer: HttpServer) {
     // volta no evento pra quem enviou trocar a mensagem provisória pela real.
     socket.on(
       'send_message',
-      async ({ conversation_id, content, client_id }: { conversation_id: number; content: string; client_id?: string }) => {
+      async ({ conversation_id, content, client_id, donation_id }: { conversation_id: number; content: string; client_id?: string; donation_id?: number | null }) => {
         try {
           const text = typeof content === 'string' ? content.trim() : ''
           if (!text || text.length > 5000) return
@@ -76,10 +76,21 @@ export function initSocket(httpServer: HttpServer) {
           if (conversation.rows.length === 0) return
           const { sender_id, recipient_id } = conversation.rows[0]
 
+          // A mensagem pertence ao assunto escolhido no app (se for mesmo um
+          // assunto desta conversa) ou, senão, ao assunto mais recente
+          const topicId = Number.isInteger(donation_id) ? donation_id : null
           const { rows } = await pool.query(
-            `INSERT INTO messages (conversation_id, author_id, content)
-             VALUES ($1, $2, $3) RETURNING id, conversation_id, author_id, content, sent_at`,
-            [conversation_id, userId, text]
+            `INSERT INTO messages (conversation_id, author_id, content, type, donation_id)
+             VALUES ($1, $2, $3, 'text', COALESCE(
+               (SELECT t.donation_id FROM messages t
+                WHERE t.conversation_id = $1 AND t.type = 'topic' AND t.donation_id = $4::int
+                LIMIT 1),
+               (SELECT t.donation_id FROM messages t
+                WHERE t.conversation_id = $1 AND t.type = 'topic'
+                ORDER BY t.sent_at DESC, t.id DESC LIMIT 1)
+             ))
+             RETURNING id, conversation_id, author_id, content, sent_at, type, donation_id`,
+            [conversation_id, userId, text, topicId]
           )
 
           io.to([`user_${sender_id}`, `user_${recipient_id}`]).emit('new_message', {

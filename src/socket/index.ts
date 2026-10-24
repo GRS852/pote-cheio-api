@@ -2,6 +2,7 @@ import { Server } from 'socket.io'
 import { Server as HttpServer } from 'http'
 import jwt from 'jsonwebtoken'
 import pool from '../db'
+import { createTextMessage } from '../services/conversationsService'
 
 let io: Server
 
@@ -64,39 +65,7 @@ export function initSocket(httpServer: HttpServer) {
       'send_message',
       async ({ conversation_id, content, client_id, donation_id }: { conversation_id: number; content: string; client_id?: string; donation_id?: number | null }) => {
         try {
-          const text = typeof content === 'string' ? content.trim() : ''
-          if (!text || text.length > 5000) return
-
-          const conversation = await pool.query(
-            `SELECT id, sender_id, recipient_id FROM conversations
-             WHERE id = $1 AND (sender_id = $2 OR recipient_id = $2)`,
-            [conversation_id, userId]
-          )
-
-          if (conversation.rows.length === 0) return
-          const { sender_id, recipient_id } = conversation.rows[0]
-
-          // A mensagem pertence ao assunto escolhido no app (se for mesmo um
-          // assunto desta conversa) ou, senão, ao assunto mais recente
-          const topicId = Number.isInteger(donation_id) ? donation_id : null
-          const { rows } = await pool.query(
-            `INSERT INTO messages (conversation_id, author_id, content, type, donation_id)
-             VALUES ($1, $2, $3, 'text', COALESCE(
-               (SELECT t.donation_id FROM messages t
-                WHERE t.conversation_id = $1 AND t.type = 'topic' AND t.donation_id = $4::int
-                LIMIT 1),
-               (SELECT t.donation_id FROM messages t
-                WHERE t.conversation_id = $1 AND t.type = 'topic'
-                ORDER BY t.sent_at DESC, t.id DESC LIMIT 1)
-             ))
-             RETURNING id, conversation_id, author_id, content, sent_at, type, donation_id`,
-            [conversation_id, userId, text, topicId]
-          )
-
-          io.to([`user_${sender_id}`, `user_${recipient_id}`]).emit('new_message', {
-            ...rows[0],
-            client_id: client_id ?? null,
-          })
+          await createTextMessage(Number(conversation_id), userId, content, client_id ?? null, donation_id ?? null)
         } catch (error) {
           console.error('Socket send_message error:', error)
         }

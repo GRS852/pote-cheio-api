@@ -1,7 +1,7 @@
 import { Response } from 'express'
 import pool from '../db'
 import { AuthRequest } from '../middlewares/authMiddleware'
-import { MESSAGE_SELECT, addConversationTopic, findOrCreatePairConversation } from '../services/conversationsService'
+import { MESSAGE_SELECT, addConversationTopic, createTextMessage, findOrCreatePairConversation } from '../services/conversationsService'
 
 // Uma conversa por dupla: se já existe conversa entre os dois, reaproveita
 // e só abre um novo assunto (a doação) dentro dela.
@@ -114,6 +114,28 @@ export async function listMessages(req: AuthRequest, res: Response) {
     return res.status(200).json({ messages: rows })
   } catch (error) {
     console.error('List messages error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+}
+
+// Envio de mensagem por HTTP: usado pelo app quando o socket não está
+// conectado (ex.: rede que bloqueia WebSocket). Mesmo efeito do socket.
+export async function sendMessage(req: AuthRequest, res: Response) {
+  const { id } = req.params
+  const { content, client_id, donation_id } = req.body ?? {}
+
+  try {
+    const message = await createTextMessage(
+      Number(id),
+      req.userId as number,
+      content,
+      typeof client_id === 'string' ? client_id : null,
+      donation_id != null ? Number(donation_id) : null
+    )
+    if (!message) return res.status(400).json({ error: 'Invalid message or conversation' })
+    return res.status(201).json({ message })
+  } catch (error) {
+    console.error('Send message error:', error)
     return res.status(500).json({ error: 'Internal server error' })
   }
 }

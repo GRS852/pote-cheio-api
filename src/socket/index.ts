@@ -3,6 +3,7 @@ import { Server as HttpServer } from 'http'
 import jwt from 'jsonwebtoken'
 import pool from '../db'
 import { createTextMessage } from '../services/conversationsService'
+import { getAccountBlock } from '../services/accountStatus'
 
 let io: Server
 
@@ -21,18 +22,29 @@ export function initSocket(httpServer: HttpServer) {
     pingTimeout: 8000,
   })
 
-  io.use((socket, next) => {
+  io.use(async (socket, next) => {
     const token = socket.handshake.auth.token as string
 
     if (!token) return next(new Error('Token not provided'))
 
+    let userId: number
     try {
       const payload = jwt.verify(token, process.env.JWT_SECRET as string) as { id: number }
-      socket.data.userId = payload.id
-      next()
+      userId = payload.id
     } catch {
-      next(new Error('Invalid token'))
+      return next(new Error('Invalid token'))
     }
+
+    // Conta banida ou desativada também não recebe nada em tempo real
+    try {
+      const block = await getAccountBlock(userId)
+      if (block) return next(new Error(block.body.error))
+    } catch {
+      return next(new Error('Account check failed'))
+    }
+
+    socket.data.userId = userId
+    next()
   })
 
   io.on('connection', (socket) => {

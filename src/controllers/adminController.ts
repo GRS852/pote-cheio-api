@@ -2,6 +2,7 @@ import { Response } from 'express'
 import pool from '../db'
 import { AdminAuthRequest } from '../middlewares/adminAuthMiddleware'
 import { createNotification, notifyDonationFavoriters } from '../services/notificationsService'
+import { getIo } from '../socket'
 
 export async function getUserActivity(req: AdminAuthRequest, res: Response) {
   const { id } = req.params
@@ -147,6 +148,10 @@ async function cancelActiveTransactionsForUser(donorId: number, reason: string):
   }
 }
 
+function disconnectUserSockets(userId: number) {
+  getIo()?.in(`user_${userId}`).disconnectSockets(true)
+}
+
 export async function warnUser(req: AdminAuthRequest, res: Response) {
   const { id } = req.params
   const { ban_days, reason, report_id } = req.body
@@ -193,6 +198,9 @@ export async function warnUser(req: AdminAuthRequest, res: Response) {
       [id]
     )
 
+    // Com banimento, derruba as conexões em tempo real abertas dessa pessoa
+    if (banDays > 0) disconnectUserSockets(Number(id))
+
     return res.status(200).json({ user: rows[0], warning_count: warningCount.rows[0].count })
   } catch (error) {
     console.error('Warn user error:', error)
@@ -229,6 +237,9 @@ export async function disableUser(req: AdminAuthRequest, res: Response) {
     if (report_id) {
       await resolveReportWithAction(Number(report_id), req.adminId as number, reason ?? null)
     }
+
+    // Conta desativada: derruba as conexões em tempo real abertas dessa pessoa
+    disconnectUserSockets(Number(id))
 
     return res.status(200).json({ user: rows[0] })
   } catch (error) {

@@ -626,7 +626,10 @@ export async function reserveDonation(req: AuthRequest, res: Response) {
       reference_type: 'donation',
     })
 
-    return res.status(200).json({ donation: rows[0] })
+    // Junto o nome de quem vai receber: sem ele o app mostrava "Reservado para alguém"
+    const { rows: nameRows } = await pool.query(`SELECT full_name FROM profiles WHERE user_id = $1`, [user_id])
+
+    return res.status(200).json({ donation: { ...rows[0], reserved_for_name: nameRows[0]?.full_name ?? null } })
   } catch (error) {
     console.error('Reserve donation error:', error)
     return res.status(500).json({ error: 'Internal server error' })

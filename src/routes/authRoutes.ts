@@ -8,6 +8,7 @@ import {
   verifyResetCode,
   resetPassword,
   getMyModerationNotices,
+  googleLogin,
 } from '../controllers/authController'
 import { authMiddleware } from '../middlewares/authMiddleware'
 
@@ -15,6 +16,7 @@ const router = Router()
 
 router.post('/login', login)
 router.post('/register', register)
+router.post('/google', googleLogin)
 router.get('/me', authMiddleware, getMe)
 router.get('/me/moderation', authMiddleware, getMyModerationNotices)
 router.patch('/profile', authMiddleware, updateProfile)

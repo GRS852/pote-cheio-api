@@ -68,3 +68,44 @@ export async function addConversationTopic(conversationId: number, donationId: n
   await emitConversationMessage(conversationId, { ...rows[0], client_id: null })
   return true
 }
+
+// Grava uma mensagem de texto e entrega em tempo real aos dois participantes.
+// Usada pelo socket e pela rota REST (plano B quando o socket não conecta).
+// Devolve null se o texto é inválido ou o usuário não faz parte da conversa.
+export async function createTextMessage(
+  conversationId: number,
+  userId: number,
+  content: unknown,
+  clientId: string | null,
+  donationId: number | null
+) {
+  const text = typeof content === 'string' ? content.trim() : ''
+  if (!text || text.length > 5000) return null
+
+  const conversation = await pool.query(
+    `SELECT id FROM conversations WHERE id = $1 AND (sender_id = $2 OR recipient_id = $2)`,
+    [conversationId, userId]
+  )
+  if (conversation.rows.length === 0) return null
+
+  // A mensagem pertence ao assunto escolhido no app (se for mesmo um
+  // assunto desta conversa) ou, senão, ao assunto mais recente
+  const topicId = Number.isInteger(donationId) ? donationId : null
+  const { rows } = await pool.query(
+    `INSERT INTO messages (conversation_id, author_id, content, type, donation_id)
+     VALUES ($1, $2, $3, 'text', COALESCE(
+       (SELECT t.donation_id FROM messages t
+        WHERE t.conversation_id = $1 AND t.type = 'topic' AND t.donation_id = $4::int
+        LIMIT 1),
+       (SELECT t.donation_id FROM messages t
+        WHERE t.conversation_id = $1 AND t.type = 'topic'
+        ORDER BY t.sent_at DESC, t.id DESC LIMIT 1)
+     ))
+     RETURNING id, conversation_id, author_id, content, sent_at, type, donation_id`,
+    [conversationId, userId, text, topicId]
+  )
+
+  const message = { ...rows[0], client_id: clientId }
+  await emitConversationMessage(conversationId, message)
+  return message
+}

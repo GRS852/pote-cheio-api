@@ -68,7 +68,9 @@ export async function shipTransaction(req: AuthRequest, res: Response) {
       reference_type: 'donation',
     })
 
-    return res.status(200).json({ transaction: rows[0] })
+    // Devolve a transação completa (título, foto e nomes), igual à da tela;
+    // só a linha atualizada fazia o app mostrar "Doador: undefined"
+    return res.status(200).json({ transaction: (await findTransaction(id)) ?? rows[0] })
   } catch (error) {
     console.error('Ship transaction error:', error)
     return res.status(500).json({ error: 'Internal server error' })
@@ -105,7 +107,9 @@ export async function receiveTransaction(req: AuthRequest, res: Response) {
       reference_type: 'donation',
     })
 
-    return res.status(200).json({ transaction: rows[0] })
+    // Devolve a transação completa (título, foto e nomes), igual à da tela;
+    // só a linha atualizada fazia o app mostrar "Doador: undefined"
+    return res.status(200).json({ transaction: (await findTransaction(id)) ?? rows[0] })
   } catch (error) {
     console.error('Receive transaction error:', error)
     return res.status(500).json({ error: 'Internal server error' })
@@ -145,7 +149,9 @@ export async function donorConfirmReceived(req: AuthRequest, res: Response) {
       reference_type: 'donation',
     })
 
-    return res.status(200).json({ transaction: rows[0] })
+    // Devolve a transação completa (título, foto e nomes), igual à da tela;
+    // só a linha atualizada fazia o app mostrar "Doador: undefined"
+    return res.status(200).json({ transaction: (await findTransaction(id)) ?? rows[0] })
   } catch (error) {
     console.error('Donor confirm received error:', error)
     return res.status(500).json({ error: 'Internal server error' })

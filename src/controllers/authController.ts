@@ -3,7 +3,18 @@ import bcrypt from 'bcrypt'
 import jwt from 'jsonwebtoken'
 import pool from '../db'
 import { AuthRequest } from '../middlewares/authMiddleware'
+import { OAuth2Client } from 'google-auth-library'
 import { sendPasswordResetEmail } from '../services/emailService'
+
+// ID do cliente OAuth do Google (é público: também vai no build do site).
+// Pode ser trocado pela variável GOOGLE_CLIENT_ID sem mudar o código.
+const GOOGLE_CLIENT_ID =
+  process.env.GOOGLE_CLIENT_ID || '172922092574-mq3dutbto5dlqjummop19p57g70j54ab.apps.googleusercontent.com'
+const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID)
+
+function signToken(user: { id: number; email: string }) {
+  return jwt.sign({ id: user.id, email: user.email }, process.env.JWT_SECRET as string, { expiresIn: '7d' })
+}
 
 // Avisos de moderação do PRÓPRIO usuário logado (nunca exposto em rotas públicas).
 export async function getMyModerationNotices(req: AuthRequest, res: Response) {
@@ -78,6 +89,12 @@ export async function login(req: Request, res: Response) {
     }
 
     const user = result.rows[0]
+
+    // Conta criada pelo Google ainda não tem senha (pode criar uma pelo "Esqueci minha senha")
+    if (!user.password) {
+      return res.status(401).json({ error: 'Google account' })
+    }
+
     const passwordMatch = await bcrypt.compare(password, user.password)
 
     if (!passwordMatch) {
@@ -92,13 +109,7 @@ export async function login(req: Request, res: Response) {
       return res.status(403).json({ error: 'Account temporarily banned', banned_until: user.banned_until })
     }
 
-    const token = jwt.sign(
-      { id: user.id, email: user.email },
-      process.env.JWT_SECRET as string,
-      { expiresIn: '7d' }
-    )
-
-    return res.status(200).json({ token })
+    return res.status(200).json({ token: signToken(user) })
   } catch (error) {
     console.error('Login error:', error)
     return res.status(500).json({ error: 'Internal server error' })
@@ -255,5 +266,78 @@ export async function resetPassword(req: Request, res: Response) {
   } catch (error) {
     console.error('Reset password error:', error)
     return res.status(500).json({ error: 'Internal server error' })
+  }
+}
+
+// Login com Google: o site manda o ID Token que o Google entregou. Aqui ele é
+// validado com a biblioteca oficial (assinatura, validade e se foi emitido
+// para o Pote Cheio). Se o e-mail já tem conta, entra nela (e liga ao Google);
+// senão, cria a conta com o nome e a foto do Google.
+export async function googleLogin(req: Request, res: Response) {
+  const { id_token } = req.body ?? {}
+  if (!id_token || typeof id_token !== 'string') {
+    return res.status(400).json({ error: 'id_token is required' })
+  }
+
+  let payload
+  try {
+    const ticket = await googleClient.verifyIdToken({ idToken: id_token, audience: GOOGLE_CLIENT_ID })
+    payload = ticket.getPayload()
+  } catch {
+    return res.status(401).json({ error: 'Invalid Google token' })
+  }
+
+  if (!payload?.sub || !payload.email || !payload.email_verified) {
+    return res.status(401).json({ error: 'Google account email not verified' })
+  }
+
+  const googleId = payload.sub
+  const email = payload.email.toLowerCase()
+  const fullName = payload.name || email.split('@')[0]
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+
+    let { rows } = await client.query(
+      `SELECT id, email, status, banned_until, google_id FROM users
+       WHERE google_id = $1 OR LOWER(email) = $2
+       ORDER BY (google_id = $1) DESC NULLS LAST
+       LIMIT 1`,
+      [googleId, email]
+    )
+    let user = rows[0]
+
+    if (user && !user.google_id) {
+      // Conta já existente com o mesmo e-mail (verificado pelo Google): liga ao Google
+      await client.query(`UPDATE users SET google_id = $1 WHERE id = $2`, [googleId, user.id])
+    }
+
+    if (!user) {
+      ;({ rows } = await client.query(
+        `INSERT INTO users (email, password, google_id, avatar_url) VALUES ($1, NULL, $2, $3)
+         RETURNING id, email, status, banned_until`,
+        [email, googleId, payload.picture ?? null]
+      ))
+      user = rows[0]
+      await client.query(`INSERT INTO profiles (user_id, full_name) VALUES ($1, $2)`, [user.id, fullName])
+    }
+
+    await client.query('COMMIT')
+
+    if (user.status === 'disabled') {
+      return res.status(403).json({ error: 'Account disabled' })
+    }
+    if (user.banned_until && new Date(user.banned_until) > new Date()) {
+      return res.status(403).json({ error: 'Account temporarily banned', banned_until: user.banned_until })
+    }
+
+    return res.status(200).json({ token: signToken(user) })
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    console.error('Google login error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  } finally {
+    client.release()
   }
 }

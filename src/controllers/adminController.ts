@@ -2,6 +2,7 @@ import { Response } from 'express'
 import pool from '../db'
 import { AdminAuthRequest } from '../middlewares/adminAuthMiddleware'
 import { createNotification, notifyDonationFavoriters } from '../services/notificationsService'
+import { deleteUserAccount } from '../services/accountDeletionService'
 import { getIo } from '../socket'
 
 export async function getUserActivity(req: AdminAuthRequest, res: Response) {
@@ -430,12 +431,23 @@ export async function getStats(req: AdminAuthRequest, res: Response) {
   }
 }
 
+// Contas desativadas há mais de 30 dias: apaga dados e arquivos, com a mesma
+// rotina da exclusão pela própria pessoa (uma conta com problema não impede
+// as outras de serem apagadas)
 export async function purgeExpiredAccounts(): Promise<void> {
   try {
-    const result = await pool.query(
-      `DELETE FROM users WHERE status = 'disabled' AND disabled_at < CURRENT_TIMESTAMP - interval '${ACCOUNT_DELETION_GRACE_DAYS} days'`
+    const { rows } = await pool.query(
+      `SELECT id FROM users WHERE status = 'disabled' AND disabled_at < CURRENT_TIMESTAMP - interval '${ACCOUNT_DELETION_GRACE_DAYS} days'`
     )
-    if (result.rowCount) console.log(`[purgeExpiredAccounts] Removed ${result.rowCount} account(s) past the grace period`)
+    let removed = 0
+    for (const { id } of rows) {
+      try {
+        if (await deleteUserAccount(id, 'A conta do doador foi removida e a doação foi cancelada.')) removed++
+      } catch (error) {
+        console.error(`Purge expired account ${id} error:`, error)
+      }
+    }
+    if (removed) console.log(`[purgeExpiredAccounts] Removed ${removed} account(s) past the grace period`)
   } catch (error) {
     console.error('Purge expired accounts error:', error)
   }

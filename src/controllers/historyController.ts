@@ -6,10 +6,10 @@ export async function donationsMade(req: AuthRequest, res: Response) {
   try {
     const { rows } = await pool.query(
       `SELECT h.*, d.title, d.category, d.photo_url,
-              p.full_name AS recipient_name
+              COALESCE(p.full_name, 'Usuário excluído') AS recipient_name
        FROM donation_history h
        JOIN donations d ON d.id = h.donation_id
-       JOIN profiles p ON p.user_id = h.recipient_id
+       LEFT JOIN profiles p ON p.user_id = h.recipient_id
        WHERE h.donor_id = $1
        ORDER BY h.donated_at DESC`,
       [req.userId]
@@ -26,10 +26,10 @@ export async function donationsReceived(req: AuthRequest, res: Response) {
   try {
     const { rows } = await pool.query(
       `SELECT h.*, d.title, d.category, d.photo_url,
-              p.full_name AS donor_name
+              COALESCE(p.full_name, 'Usuário excluído') AS donor_name
        FROM donation_history h
        JOIN donations d ON d.id = h.donation_id
-       JOIN profiles p ON p.user_id = h.donor_id
+       LEFT JOIN profiles p ON p.user_id = h.donor_id
        WHERE h.recipient_id = $1
        ORDER BY h.donated_at DESC`,
       [req.userId]

@@ -5,6 +5,8 @@ import pool from '../db'
 import { AuthRequest } from '../middlewares/authMiddleware'
 import { OAuth2Client } from 'google-auth-library'
 import { sendPasswordResetEmail } from '../services/emailService'
+import { TERMS_VERSION, checkSignupConsent } from '../services/terms'
+import { deleteUserAccount } from '../services/accountDeletionService'
 
 // ID do cliente OAuth do Google (é público: também vai no build do site).
 // Pode ser trocado pela variável GOOGLE_CLIENT_ID sem mudar o código.
@@ -38,7 +40,11 @@ export async function getMyModerationNotices(req: AuthRequest, res: Response) {
 }
 
 export async function register(req: Request, res: Response) {
-  const { full_name, email, password, birth_date } = req.body
+  const { full_name, email, password, birth_date, accepted_terms } = req.body
+
+  // Aceite dos termos e idade mínima conferidos aqui também (não só na tela)
+  const consentError = checkSignupConsent(accepted_terms, birth_date)
+  if (consentError) return res.status(400).json({ error: consentError })
 
   try {
     const userExists = await pool.query(
@@ -53,13 +59,14 @@ export async function register(req: Request, res: Response) {
     const password_hash = await bcrypt.hash(password, 10)
 
     const { rows } = await pool.query(
-      'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email',
-      [email, password_hash]
+      `INSERT INTO users (email, password, terms_accepted_at, terms_version)
+       VALUES ($1, $2, CURRENT_TIMESTAMP, $3) RETURNING id, email`,
+      [email, password_hash, TERMS_VERSION]
     )
 
     await pool.query(
       'INSERT INTO profiles (user_id, full_name, birth_date) VALUES ($1, $2, $3)',
-      [rows[0].id, full_name, birth_date ?? null]
+      [rows[0].id, full_name, birth_date]
     )
 
     const token = jwt.sign(
@@ -120,11 +127,14 @@ export async function getMe(req: AuthRequest, res: Response) {
   try {
     const result = await pool.query(
       `SELECT u.id, u.email, u.avatar_url, u.created_at, u.status, u.banned_until,
-              p.full_name, p.birth_date, p.phone, p.cpf
+              p.full_name, p.birth_date, p.phone, p.cpf,
+              u.terms_accepted_at, u.terms_version,
+              (u.terms_version IS DISTINCT FROM $2) AS terms_pending,
+              (u.password IS NOT NULL) AS has_password
        FROM users u
        LEFT JOIN profiles p ON p.user_id = u.id
        WHERE u.id = $1`,
-      [req.userId]
+      [req.userId, TERMS_VERSION]
     )
 
     if (result.rows.length === 0) {
@@ -274,7 +284,7 @@ export async function resetPassword(req: Request, res: Response) {
 // para o Pote Cheio). Se o e-mail já tem conta, entra nela (e liga ao Google);
 // senão, cria a conta com o nome e a foto do Google.
 export async function googleLogin(req: Request, res: Response) {
-  const { id_token } = req.body ?? {}
+  const { id_token, accepted_terms, birth_date } = req.body ?? {}
   if (!id_token || typeof id_token !== 'string') {
     return res.status(400).json({ error: 'id_token is required' })
   }
@@ -314,13 +324,28 @@ export async function googleLogin(req: Request, res: Response) {
     }
 
     if (!user) {
+      // Conta nova: precisa do aceite dos termos e da data de nascimento.
+      // Sem eles, o app mostra a janela de aceite e reenvia o mesmo token.
+      const consentError = checkSignupConsent(accepted_terms, birth_date)
+      if (consentError) {
+        await client.query('ROLLBACK')
+        const needsConsent = accepted_terms === undefined && birth_date === undefined
+        return needsConsent
+          ? res.status(428).json({ error: 'Terms required' })
+          : res.status(400).json({ error: consentError })
+      }
+
       ;({ rows } = await client.query(
-        `INSERT INTO users (email, password, google_id, avatar_url) VALUES ($1, NULL, $2, $3)
+        `INSERT INTO users (email, password, google_id, avatar_url, terms_accepted_at, terms_version)
+         VALUES ($1, NULL, $2, $3, CURRENT_TIMESTAMP, $4)
          RETURNING id, email, status, banned_until`,
-        [email, googleId, payload.picture ?? null]
+        [email, googleId, payload.picture ?? null, TERMS_VERSION]
       ))
       user = rows[0]
-      await client.query(`INSERT INTO profiles (user_id, full_name) VALUES ($1, $2)`, [user.id, fullName])
+      await client.query(
+        `INSERT INTO profiles (user_id, full_name, birth_date) VALUES ($1, $2, $3)`,
+        [user.id, fullName, birth_date]
+      )
     }
 
     await client.query('COMMIT')
@@ -339,5 +364,49 @@ export async function googleLogin(req: Request, res: Response) {
     return res.status(500).json({ error: 'Internal server error' })
   } finally {
     client.release()
+  }
+}
+
+// Aceite dos termos por quem já tinha conta antes deles (ou quando a versão muda)
+export async function acceptTerms(req: AuthRequest, res: Response) {
+  if (req.body?.accepted_terms !== true) {
+    return res.status(400).json({ error: 'Terms not accepted' })
+  }
+  try {
+    await pool.query(
+      `UPDATE users SET terms_accepted_at = CURRENT_TIMESTAMP, terms_version = $1 WHERE id = $2`,
+      [TERMS_VERSION, req.userId]
+    )
+    return res.status(200).json({ terms_version: TERMS_VERSION })
+  } catch (error) {
+    console.error('Accept terms error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+}
+
+// Exclusão da própria conta (art. 18, VI da LGPD). Confirma que é mesmo a
+// pessoa: senha para quem tem senha; quem entra só pelo Google digita EXCLUIR.
+export async function deleteMyAccount(req: AuthRequest, res: Response) {
+  const { password, confirmation } = req.body ?? {}
+
+  try {
+    const { rows } = await pool.query(`SELECT password FROM users WHERE id = $1`, [req.userId])
+    if (rows.length === 0) return res.status(404).json({ error: 'User not found' })
+
+    if (rows[0].password) {
+      const ok = typeof password === 'string' && await bcrypt.compare(password, rows[0].password)
+      if (!ok) return res.status(401).json({ error: 'Invalid password' })
+    } else if (typeof confirmation !== 'string' || confirmation.trim().toUpperCase() !== 'EXCLUIR') {
+      return res.status(400).json({ error: 'Confirmation required' })
+    }
+
+    await deleteUserAccount(
+      req.userId as number,
+      'O doador excluiu a conta e a doação foi cancelada.'
+    )
+    return res.status(200).json({ deleted: true })
+  } catch (error) {
+    console.error('Delete account error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
   }
 }

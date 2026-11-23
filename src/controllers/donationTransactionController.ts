@@ -8,13 +8,14 @@ const AUTO_FINALIZE_DAYS = 7
 async function findTransaction(donationId: string | string[]) {
   const { rows } = await pool.query(
     `SELECT h.*, d.title, d.photo_url AS donation_photo_url, d.cancel_reason,
-            pd.full_name AS donor_name, pr.full_name AS recipient_name,
+            COALESCE(pd.full_name, 'Usuário excluído') AS donor_name,
+            COALESCE(pr.full_name, 'Usuário excluído') AS recipient_name,
             EXISTS(SELECT 1 FROM donation_ratings r WHERE r.donation_history_id = h.id) AS has_rating,
             EXISTS(SELECT 1 FROM donation_comments c WHERE c.donation_history_id = h.id) AS has_comment
      FROM donation_history h
      JOIN donations d ON d.id = h.donation_id
-     JOIN profiles pd ON pd.user_id = h.donor_id
-     JOIN profiles pr ON pr.user_id = h.recipient_id
+     LEFT JOIN profiles pd ON pd.user_id = h.donor_id
+     LEFT JOIN profiles pr ON pr.user_id = h.recipient_id
      WHERE h.donation_id = $1
      ORDER BY h.id DESC
      LIMIT 1`,
